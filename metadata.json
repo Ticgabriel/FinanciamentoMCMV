@@ -1,0 +1,6 @@
+{
+  "name": "Planejador de Financiamento Imobiliário",
+  "description": "Planejamento e simulação de financiamento imobiliário com consolidação de caixa familiar, SAC/Price, conciliação e cenários auditáveis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
