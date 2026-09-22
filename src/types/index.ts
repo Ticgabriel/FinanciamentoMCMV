@@ -58,17 +58,21 @@ export type TipoObrigacaoVendedor =
   | 'REPASSE_FINANCIAMENTO' 
   | 'OUTRO';
 
+export type ResponsavelObrigacao = 'COMPRADOR' | 'BANCO' | 'FGTS' | 'SUBSIDIO' | 'CREDITO_DIRETO';
+
 export interface ObrigacaoVendedor {
   id: string;
   descricao: string;
   tipo: TipoObrigacaoVendedor;
   valorBaseCentavos: number;
-  vencimento: string; // ISO
+  vencimento: string; // ISO YYYY-MM-DD
+  vinculoMarco?: 'DATA_FIXA' | 'CONTRATACAO' | 'CHAVES' | 'MUDANCA';
+  diasAposMarco?: number;
   pagoAntecipado: boolean;
   indiceCorrecao: 'SEM_CORRECAO' | 'INCC' | 'IPCA' | 'IGPM';
   taxaJurosMensalPercent: number; // ex: 0 ou 1% a.m. pós chaves
   status: StatusDado;
-  responsavelPagamento?: 'COMPRADOR' | 'BANCO' | 'FGTS' | 'SUBSIDIO' | 'CREDITO_DIRETO';
+  responsavelPagamento?: ResponsavelObrigacao;
   afetaCaixaLivre?: boolean; // Se false, é liquidado diretamente por crédito bancário/FGTS sem sair do bolso da família
   fonteVinculadaId?: string; // Vínculo explícito com a fonte de recurso
 }
@@ -156,6 +160,45 @@ export interface MarcoTemporal {
   descricao: string;
 }
 
+export interface LiberacaoMedicaoObra {
+  mesNumero: number;
+  competencia: string;
+  percentualAvancoFisicoMes: number; // ex: 5%
+  percentualAcumulado: number; // ex: 15%
+  valorLiberadoMesCentavos: number;
+  saldoDevedorAcumuladoLiberadoCentavos: number;
+}
+
+export interface EncargoMensalObraLinha {
+  mesNumero: number;
+  competencia: string;
+  percentualAvancoAcumulado: number;
+  saldoLiberadoCentavos: number;
+  jurosObraCentavos: number;
+  atualizacaoMonetariaCentavos: number;
+  seguroMipCentavos: number;
+  seguroDfiCentavos: number;
+  taxaAdministracaoCentavos: number;
+  encargoTotalMesCentavos: number;
+  origemCalculo: string;
+}
+
+export interface ConfiguracaoFaseObra {
+  ativo: boolean;
+  duracaoMesesPrevista: number; // ex: 24
+  regraLiberacao: 'LINEAR' | 'CURVA_S' | 'CRONOGRAMA_MEDICOES_CUSTOM';
+  cronogramaMedicoesCustom?: { mesNumero: number; percentualLiberadoAcumulado: number }[];
+  baseCalculoMipObra: 'SALDO_LIBERADO' | 'VALOR_TOTAL_FINANCIADO';
+  aliquotaMipObraPercent?: number; // Se não informado, herda da proposta bancária
+  baseCalculoDfiObra: 'VALOR_AVALIACAO' | 'SALDO_LIBERADO';
+  aliquotaDfiObraCentavos?: number; // Se não informado, herda da proposta bancária
+  taxaAdmObraCentavos?: number; // ex: 2500 (R$ 25,00)
+  indiceAtualizacaoObra: 'SEM_CORRECAO' | 'TR' | 'INCC';
+  trObraAnualPercent?: number;
+  regraInicioAmortizacao: 'MES_SUBSEQUENTE_CHAVES' | 'MES_CHAVES' | 'DATA_FIXA';
+  dataInicioAmortizacaoFixa?: string;
+}
+
 export interface PremissasCenario {
   nome: string;
   atrasoObraMeses: number; // ex: 0 ou 6 ou 12
@@ -163,6 +206,7 @@ export interface PremissasCenario {
   variacaoCreditoPercent: number; // ex: -10 para repasse com 10% a menos
   inccAnualPercent: number; // ex: 6% ao ano projetado
   trAnualPercent: number; // ex: 0% ou 1.5%
+  convencaoAmortizacaoTR?: 'RECALCULO_MENSAL_PADRAO_SFH' | 'AMORTIZACAO_ORIGINAL_COM_RESIDUO'; // Padrão SFH / CAIXA
   aumentoCustosInstalacaoPercent: number; // ex: 20%
   reservaMinimaDesejadaCentavos: number; // ex: R$ 15.000,00
   perderBonusPontualidade?: boolean; // Se ativado no cenário de estresse, simula perda do bônus por atraso contratual (cobrança nas chaves)
@@ -238,12 +282,23 @@ export interface IndicadoresConsolidados {
   necessidadeAdicionalRecursosCentavos: number;
   necessidadeParaPreservarReservaCentavos: number;
   saldoCaixaNasChavesCentavos: number;
+  
+  // Decomposição limpa sem duplicação de principal (Fix Auditoria Item 1)
+  recursosPropriosPagosVendedorCentavos: number; // Sinal + mensais + balões desembolsados
+  fgtsUtilizadoCentavos: number; // FGTS direto
+  subsidioUtilizadoCentavos: number; // Subsídio habitacional
+  repasseFinanciadoCentavos: number; // Repasse do banco à construtora
+  custoTotalEncargosObraBancoCentavos: number; // Juros de obra + seguros + taxas durante a construção
+  custoTotalFinanciamentoAmortizacaoBancoCentavos: number; // 420 prestações com amortização + juros + seguros + tarifas
+  
   custoTotalJurosBancoCentavos: number;
   custoTotalSegurosBancoCentavos: number;
   custoTotalTaxasAdmBancoCentavos: number;
-  custoTotalPagoBancoCentavos: number;
-  custoTotalPagoVendedorCentavos: number;
-  custoTotalCustosComplementaresCentavos: number;
+  custoTotalPagoBancoCentavos: number; // Encargos de Obra + Amortização
+  custoTotalPagoVendedorCentavos: number; // Total nominal quitado ao vendedor
+  custoTotalCustosComplementaresCentavos: number; // ITBI, Registro, Avaliação
+  
+  // Custo Efetivo Total da Aquisição (sem duplicação do principal financiado)
   custoAquisicaoEfetivoCentavos: number;
   taxaComprometimentoRendaPrimeiroMesPercent: number;
 }
@@ -296,6 +351,12 @@ export interface ProjetoFinanciamento {
   
   // Proposta bancária ativa
   propostaBancaria: PropostaBancaria;
+  
+  // Convenção TR na amortização pós-chaves
+  convencaoTR?: 'RECALCULO_MENSAL_PADRAO_SFH' | 'AMORTIZACAO_ORIGINAL_COM_RESIDUO';
+  
+  // Configuração detalhada da fase de obra (se modalidade for PLANTA_COM_BANCO_NA_OBRA)
+  faseObraConfig?: ConfiguracaoFaseObra;
   
   // Custos Complementares
   custosComplementares: CustoComplementar[];

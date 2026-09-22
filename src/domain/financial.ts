@@ -13,14 +13,26 @@ import {
   IndicadoresConsolidados,
   AlertaProjeto,
   SistemaAmortizacao,
-  PropostaBancaria
+  PropostaBancaria,
+  EncargoMensalObraLinha,
+  ConfiguracaoFaseObra
 } from '../types';
 import {
   adicionarMesesCivil,
+  adicionarDiasCivil,
+  resolverDataMarco,
   extrairCompetencia,
   calcularHorizonteCompetencias,
   diferencaMesesCivis
 } from './calendar';
+export {
+  adicionarMesesCivil,
+  adicionarDiasCivil,
+  resolverDataMarco,
+  extrairCompetencia,
+  calcularHorizonteCompetencias,
+  diferencaMesesCivis
+};
 
 // Define precisão padrão para cálculos monetários intermediários
 Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP });
@@ -58,7 +70,8 @@ export function converterTaxaEfetivaAnualParaMensal(taxaEfetivaAnualPercent: num
 
 /**
  * Gera curva teórica de financiamento bancário SAC
- * Suporta atualização monetária pela TR e calendário civil sem saltos de mês.
+ * Suporta atualização monetária pela TR com convenção de recálculo SFH/CAIXA
+ * ou resíduo acumulado, sem salto artificial de balão na parcela final.
  */
 export function gerarTabelaSAC(
   principalCentavos: number,
@@ -68,19 +81,19 @@ export function gerarTabelaSAC(
   taxaAdmFixaCentavos: number = 2500, // R$ 25,00
   aliquotaMipPercent: number = 0.0163, // taxa mensal sobre saldo
   aliquotaDfiCentavos: number = 2840, // R$ 28,40 fixo ou tabela
-  taxaTrMensal: Decimal = new Decimal(0)
+  taxaTrMensal: Decimal = new Decimal(0),
+  convencaoTR: 'RECALCULO_MENSAL_PADRAO_SFH' | 'AMORTIZACAO_ORIGINAL_COM_RESIDUO' = 'RECALCULO_MENSAL_PADRAO_SFH'
 ): ParcelaBancoLinha[] {
   const linhas: ParcelaBancoLinha[] = [];
   if (prazoMeses <= 0 || principalCentavos <= 0) return linhas;
 
   let saldoDevedor = new Decimal(principalCentavos);
-  // Amortização teórica constante = P / n
+  // Amortização teórica constante base = P / n
   const amortizacaoBase = new Decimal(principalCentavos).dividedBy(prazoMeses).round();
 
   for (let mes = 1; mes <= prazoMeses; mes++) {
     // Calendário civil robusto preservando o dia âncora
     const vencimentoIso = adicionarMesesCivil(dataInicioIso, mes - 1);
-
     const saldoInicialCentavos = saldoDevedor.toNumber();
 
     // Atualização monetária pela TR (se houver)
@@ -93,14 +106,27 @@ export function gerarTabelaSAC(
     // Juros do mês sobre o saldo corrigido
     const jurosCentavos = taxaMensal.isZero() ? 0 : saldoDevedor.times(taxaMensal).round().toNumber();
 
-    // Amortização do mês (ajuste na última para zerar)
-    let amortCentavos = amortizacaoBase.toNumber();
-    if (mes === prazoMeses || saldoDevedor.minus(amortCentavos).lessThanOrEqualTo(0)) {
+    // Amortização do mês: no padrão SFH/CAIXA, a TR atualiza o saldo e a amortização
+    // é recalculada pelo prazo remanescente (A_k = SD_k / (n - k + 1)), extinguindo o saldo suavemente.
+    const prazoRestante = prazoMeses - mes + 1;
+    let amortCentavos = 0;
+
+    if (mes === prazoMeses || prazoRestante <= 1) {
+      amortCentavos = saldoDevedor.toNumber();
+    } else if (convencaoTR === 'RECALCULO_MENSAL_PADRAO_SFH') {
+      amortCentavos = saldoDevedor.dividedBy(prazoRestante).round().toNumber();
+    } else {
+      // Amortização nominal original com resíduo acumulado no final
+      amortCentavos = Math.min(saldoDevedor.toNumber(), amortizacaoBase.toNumber());
+    }
+
+    if (saldoDevedor.minus(amortCentavos).lessThanOrEqualTo(0)) {
       amortCentavos = saldoDevedor.toNumber();
     }
 
     const prestacaoCentavos = amortCentavos + jurosCentavos;
-    const mipCentavos = (mes === prazoMeses || (taxaMensal.isZero() && aliquotaMipPercent === 0))
+    // Na última prestação da CAIXA, MIP e DFI são zerados conforme apólice habitacional
+    const mipCentavos = (mes === prazoMeses || aliquotaMipPercent === 0)
       ? 0 
       : saldoDevedor.times(aliquotaMipPercent).dividedBy(100).round().toNumber();
     const dfiCentavos = mes === prazoMeses ? 0 : aliquotaDfiCentavos;
@@ -136,7 +162,7 @@ export function gerarTabelaSAC(
 
 /**
  * Gera curva teórica de financiamento bancário Price
- * Suporta Taxa Zero explícita (sem juros e sem divisão por zero), TR e calendário civil.
+ * Suporta Taxa Zero explícita (mantendo seguros se contratados), TR e calendário civil.
  */
 export function gerarTabelaPrice(
   principalCentavos: number,
@@ -146,24 +172,16 @@ export function gerarTabelaPrice(
   taxaAdmFixaCentavos: number = 2500,
   aliquotaMipPercent: number = 0.0163,
   aliquotaDfiCentavos: number = 2840,
-  taxaTrMensal: Decimal = new Decimal(0)
+  taxaTrMensal: Decimal = new Decimal(0),
+  convencaoTR: 'RECALCULO_MENSAL_PADRAO_SFH' | 'AMORTIZACAO_ORIGINAL_COM_RESIDUO' = 'RECALCULO_MENSAL_PADRAO_SFH'
 ): ParcelaBancoLinha[] {
   const linhas: ParcelaBancoLinha[] = [];
   if (prazoMeses <= 0 || principalCentavos <= 0) return linhas;
 
   let saldoDevedor = new Decimal(principalCentavos);
 
-  // Se taxa for zero: PMT = P / n
-  let pmtTeorico: Decimal;
-  if (taxaMensal.isZero()) {
-    pmtTeorico = new Decimal(principalCentavos).dividedBy(prazoMeses).round();
-  } else {
-    // PMT = P * i / (1 - (1+i)^-n)
-    const umMaisI = new Decimal(1).plus(taxaMensal);
-    const umMaisIMenosN = umMaisI.pow(-prazoMeses);
-    const denominador = new Decimal(1).minus(umMaisIMenosN);
-    pmtTeorico = new Decimal(principalCentavos).times(taxaMensal).dividedBy(denominador).round();
-  }
+  // Amortização teórica base
+  const amortizacaoBase = new Decimal(principalCentavos).dividedBy(prazoMeses).round();
 
   for (let mes = 1; mes <= prazoMeses; mes++) {
     const vencimentoIso = adicionarMesesCivil(dataInicioIso, mes - 1);
@@ -176,7 +194,23 @@ export function gerarTabelaPrice(
       saldoDevedor = saldoDevedor.plus(atualizacaoCentavos);
     }
 
+    const prazoRestante = prazoMeses - mes + 1;
     const jurosCentavos = taxaMensal.isZero() ? 0 : saldoDevedor.times(taxaMensal).round().toNumber();
+
+    let pmtTeorico: Decimal;
+    if (taxaMensal.isZero()) {
+      pmtTeorico = saldoDevedor.dividedBy(prazoRestante).round();
+    } else if (convencaoTR === 'RECALCULO_MENSAL_PADRAO_SFH' && taxaTrMensal.greaterThan(0)) {
+      const umMaisI = new Decimal(1).plus(taxaMensal);
+      const umMaisIMenosN = umMaisI.pow(-prazoRestante);
+      const denominador = new Decimal(1).minus(umMaisIMenosN);
+      pmtTeorico = saldoDevedor.times(taxaMensal).dividedBy(denominador).round();
+    } else {
+      const umMaisI = new Decimal(1).plus(taxaMensal);
+      const umMaisIMenosN = umMaisI.pow(-prazoMeses);
+      const denominador = new Decimal(1).minus(umMaisIMenosN);
+      pmtTeorico = new Decimal(principalCentavos).times(taxaMensal).dividedBy(denominador).round();
+    }
 
     let amortCentavos = taxaMensal.isZero()
       ? (mes === prazoMeses ? saldoDevedor.toNumber() : pmtTeorico.toNumber())
@@ -187,7 +221,7 @@ export function gerarTabelaPrice(
     }
 
     const prestacaoCentavos = amortCentavos + jurosCentavos;
-    const mipCentavos = (mes === prazoMeses || (taxaMensal.isZero() && aliquotaMipPercent === 0))
+    const mipCentavos = (mes === prazoMeses || aliquotaMipPercent === 0)
       ? 0
       : saldoDevedor.times(aliquotaMipPercent).dividedBy(100).round().toNumber();
     const dfiCentavos = mes === prazoMeses ? 0 : aliquotaDfiCentavos;
@@ -222,56 +256,167 @@ export function gerarTabelaPrice(
 }
 
 /**
+ * Gera os encargos e seguros mês a mês durante a fase de obras (construção).
+ * Discrimina de forma independente: Juros de Obra, MIP na Obra, DFI na Obra,
+ * Taxa de Administração e Atualização Monetária.
+ */
+export function gerarEncargosFaseObra(
+  valorFinanciadoCentavos: number,
+  avaliacaoImovelCentavos: number,
+  mesesObra: number,
+  dataInicioIso: string,
+  taxaMensalBanco: Decimal,
+  aliquotaMipPercent: number,
+  aliquotaDfiCentavos: number,
+  taxaAdmCentavos: number,
+  config?: ConfiguracaoFaseObra,
+  trAnualPercent: number = 0
+): EncargoMensalObraLinha[] {
+  const linhas: EncargoMensalObraLinha[] = [];
+  if (mesesObra <= 0 || valorFinanciadoCentavos <= 0) return linhas;
+
+  const regra = config?.regraLiberacao || 'LINEAR';
+  const taxaTrMensal = trAnualPercent > 0
+    ? new Decimal(1).plus(new Decimal(trAnualPercent).dividedBy(100)).pow(new Decimal(1).dividedBy(12)).minus(1)
+    : new Decimal(0);
+
+  for (let m = 1; m <= mesesObra; m++) {
+    const compStr = extrairCompetencia(adicionarMesesCivil(dataInicioIso, m - 1));
+    let pctAcumulado = 0;
+
+    if (regra === 'LINEAR') {
+      pctAcumulado = Math.min(1, m / mesesObra);
+    } else if (regra === 'CURVA_S') {
+      // Curva em S suave (Hermite smoothing): avanço moderado no início e fim
+      const t = m / mesesObra;
+      pctAcumulado = Math.min(1, Math.max(0, 3 * Math.pow(t, 2) - 2 * Math.pow(t, 3)));
+    } else if (regra === 'CRONOGRAMA_MEDICOES_CUSTOM' && config?.cronogramaMedicoesCustom) {
+      const itemCustom = config.cronogramaMedicoesCustom.find(c => c.mesNumero === m);
+      if (itemCustom) {
+        pctAcumulado = itemCustom.percentualLiberadoAcumulado / 100;
+      } else {
+        pctAcumulado = Math.min(1, m / mesesObra);
+      }
+    }
+
+    const saldoLiberadoAcumuladoDec = new Decimal(valorFinanciadoCentavos).times(pctAcumulado).round();
+    const saldoLiberadoCentavos = saldoLiberadoAcumuladoDec.toNumber();
+
+    // Atualização monetária TR na obra (se configurada)
+    let atualizacaoCentavos = 0;
+    if (config?.indiceAtualizacaoObra === 'TR' && taxaTrMensal.greaterThan(0)) {
+      atualizacaoCentavos = saldoLiberadoAcumuladoDec.times(taxaTrMensal).round().toNumber();
+    }
+
+    // Juros de obra calculados estritamente sobre o saldo devedor liberado acumulado pelo banco
+    const jurosObraCentavos = taxaMensalBanco.isZero()
+      ? 0
+      : saldoLiberadoAcumuladoDec.plus(atualizacaoCentavos).times(taxaMensalBanco).round().toNumber();
+
+    // MIP na obra: sobre saldo liberado ou sobre valor total financiado
+    const baseMip = (config?.baseCalculoMipObra === 'VALOR_TOTAL_FINANCIADO')
+      ? new Decimal(valorFinanciadoCentavos)
+      : saldoLiberadoAcumuladoDec;
+    const aliquotaMip = config?.aliquotaMipObraPercent !== undefined ? config.aliquotaMipObraPercent : aliquotaMipPercent;
+    const seguroMipCentavos = aliquotaMip > 0
+      ? baseMip.times(aliquotaMip).dividedBy(100).round().toNumber()
+      : 0;
+
+    // DFI na obra: valor contratado
+    const seguroDfiCentavos = config?.aliquotaDfiObraCentavos !== undefined
+      ? config.aliquotaDfiObraCentavos
+      : aliquotaDfiCentavos;
+
+    // Taxa de administração na obra
+    const taxaAdministracaoCentavos = config?.taxaAdmObraCentavos !== undefined
+      ? config.taxaAdmObraCentavos
+      : taxaAdmCentavos;
+
+    const encargoTotalMesCentavos = jurosObraCentavos + atualizacaoCentavos + seguroMipCentavos + seguroDfiCentavos + taxaAdministracaoCentavos;
+
+    linhas.push({
+      mesNumero: m,
+      competencia: compStr,
+      percentualAvancoAcumulado: Math.round(pctAcumulado * 100),
+      saldoLiberadoCentavos,
+      jurosObraCentavos,
+      atualizacaoMonetariaCentavos: atualizacaoCentavos,
+      seguroMipCentavos,
+      seguroDfiCentavos,
+      taxaAdministracaoCentavos,
+      encargoTotalMesCentavos,
+      origemCalculo: `Medição mês ${m} (${Math.round(pctAcumulado * 100)}% liberado)`
+    });
+  }
+
+  return linhas;
+}
+
+/**
  * Despacho unificado de geração de tabela bancária.
- * Trata TAXA_ZERO com juros rigorosamente zerados e aplica a TR do cenário.
+ * Trata TAXA_ZERO mantendo seguros se contratados, aplica a TR do cenário
+ * e respeita o início da amortização pós-chaves na planta com banco na obra.
  */
 export function gerarTabelaFinanciamento(
   prop: PropostaBancaria,
-  trAnualPercent: number = 0
+  trAnualPercent: number = 0,
+  dataInicioVencimentoIso?: string,
+  convencaoTR: 'RECALCULO_MENSAL_PADRAO_SFH' | 'AMORTIZACAO_ORIGINAL_COM_RESIDUO' = 'RECALCULO_MENSAL_PADRAO_SFH',
+  valorFinanciadoOverrideCentavos?: number
 ): ParcelaBancoLinha[] {
   if (prop.sistema === 'TABELA_IMPORTADA' && prop.tabelaImportada && prop.tabelaImportada.length > 0) {
     return prop.tabelaImportada;
   }
+
+  const principalCentavos = valorFinanciadoOverrideCentavos !== undefined
+    ? valorFinanciadoOverrideCentavos
+    : prop.valorFinanciadoCentavos;
+
+  const dataInicio = dataInicioVencimentoIso || prop.dataPrimeiroVencimento;
 
   const taxaTrMensal = trAnualPercent > 0
     ? new Decimal(1).plus(new Decimal(trAnualPercent).dividedBy(100)).pow(new Decimal(1).dividedBy(12)).minus(1)
     : new Decimal(0);
 
   if (prop.sistema === 'TAXA_ZERO') {
+    // Taxa Zero: juros zerados, mas mantém seguros contratados conforme apólice
     return gerarTabelaPrice(
-      prop.valorFinanciadoCentavos,
+      principalCentavos,
       prop.prazoMeses,
       new Decimal(0),
-      prop.dataPrimeiroVencimento,
+      dataInicio,
       prop.taxaAdmFixaMensalCentavos,
-      0, // sem MIP
-      0, // sem DFI
-      new Decimal(0)
+      prop.aliquotaMipInicialPercent,
+      prop.aliquotaDfiMensalCentavos,
+      new Decimal(0),
+      convencaoTR
     );
   }
 
   const taxaMensal = converterTaxaNominalAnualParaMensal(prop.taxaJurosNominalAnualPercent);
   if (prop.sistema === 'SAC') {
     return gerarTabelaSAC(
-      prop.valorFinanciadoCentavos,
+      principalCentavos,
       prop.prazoMeses,
       taxaMensal,
-      prop.dataPrimeiroVencimento,
+      dataInicio,
       prop.taxaAdmFixaMensalCentavos,
       prop.aliquotaMipInicialPercent,
       prop.aliquotaDfiMensalCentavos,
-      taxaTrMensal
+      taxaTrMensal,
+      convencaoTR
     );
   } else {
     return gerarTabelaPrice(
-      prop.valorFinanciadoCentavos,
+      principalCentavos,
       prop.prazoMeses,
       taxaMensal,
-      prop.dataPrimeiroVencimento,
+      dataInicio,
       prop.taxaAdmFixaMensalCentavos,
       prop.aliquotaMipInicialPercent,
       prop.aliquotaDfiMensalCentavos,
-      taxaTrMensal
+      taxaTrMensal,
+      convencaoTR
     );
   }
 }
@@ -369,7 +514,13 @@ export function calcularReconciliacaoPreco(projeto: ProjetoFinanciamento): Recon
 
 /**
  * Simula a evolução do caixa familiar e dos encargos mês a mês.
- * Corrige F01, F04, F05, F06, F07, F09, F11, F12.
+ * Corrige integralmente:
+ * - Duplicação do principal no Custo Total da Aquisição (Item 1)
+ * - Recálculo efetivo da redução de crédito e liquidação do déficit no caixa (Item 2)
+ * - Recálculo do saldo na TR sem salto artificial de balão residual (Item 3)
+ * - Preservação de todas as 420 parcelas após a conclusão da obra (Item 4)
+ * - Discriminação completa de Juros, Seguros e Tarifas na fase de obras
+ * - Respeito a diasAposMarco e marcos temporais com atraso civil
  */
 export function simularProjetoCompleto(
   projeto: ProjetoFinanciamento,
@@ -380,6 +531,7 @@ export function simularProjetoCompleto(
   indicadores: IndicadoresConsolidados;
   alertas: AlertaProjeto[];
   tabelaBancariaUsada: ParcelaBancoLinha[];
+  encargosFaseObraUsados?: EncargoMensalObraLinha[];
 } {
   const alertas: AlertaProjeto[] = [];
   const reconciliacao = calcularReconciliacaoPreco(projeto);
@@ -396,23 +548,10 @@ export function simularProjetoCompleto(
     });
   }
 
-  // Tabela bancária teórica gerada com suporte a taxa zero e TR
   const prop = projeto.propostaBancaria;
-  const tabelaBancaria = gerarTabelaFinanciamento(prop, cenario.trAnualPercent);
+  const modalidade = projeto.modalidade || 'PRONTO';
 
-  // Alerta de variação do crédito aprovado pelo banco (F07, R11)
-  if (cenario.variacaoCreditoPercent < 0) {
-    const deficitCreditoCentavos = Math.round(prop.valorFinanciadoCentavos * Math.abs(cenario.variacaoCreditoPercent) / 100);
-    alertas.push({
-      codigo: 'SALDO_RESIDUAL',
-      severidade: 'BLOQUEANTE',
-      titulo: `Déficit de Financiamento por Redução de Crédito do Banco (${cenario.variacaoCreditoPercent}%)`,
-      mensagem: `No cenário de estresse, o banco aprova ${Math.abs(cenario.variacaoCreditoPercent)}% a menos de financiamento (redução de ${toReais(deficitCreditoCentavos)}). Essa diferença exigirá aporte adicional de recursos próprios.`,
-      acaoSugerida: 'Adicione uma fonte complementar de recursos próprios ou renegocie o valor de repasse com a construtora.'
-    });
-  }
-
-  // Resolução de marcos com atraso de obra civil
+  // Resolução dos marcos com atraso de obra civil
   const marcoChaves = projeto.marcos.find(m => m.tipo === 'CHAVES');
   const marcoMudanca = projeto.marcos.find(m => m.tipo === 'MUDANCA_EFETIVA');
 
@@ -429,13 +568,88 @@ export function simularProjetoCompleto(
   const compChaves = extrairCompetencia(dataChavesEfetivaStr);
   const compMudanca = extrairCompetencia(dataMudancaEfetivaStr);
 
-  // Horizonte contínuo completo sem omissão de parcelas ou obrigações (F04, R07)
+  // Mapa de marcos para resolução dinâmica de datas com diasAposMarco
+  const marcosMap: Record<string, string> = {};
+  for (const m of projeto.marcos) {
+    let dt = m.dataPrevista || projeto.dataBase;
+    if (m.tipo === 'CHAVES') dt = dataChavesEfetivaStr;
+    if (m.tipo === 'MUDANCA_EFETIVA') dt = dataMudancaEfetivaStr;
+    marcosMap[m.tipo] = dt;
+  }
+  if (!marcosMap['CHAVES']) marcosMap['CHAVES'] = dataChavesEfetivaStr;
+  if (!marcosMap['MUDANCA_EFETIVA']) marcosMap['MUDANCA_EFETIVA'] = dataMudancaEfetivaStr;
+
+  // 1. Recálculo efetivo da redução de crédito aprovado pelo banco (Item 2)
+  const variacaoCredito = cenario.variacaoCreditoPercent || 0;
+  const fatorCredito = 1 + (variacaoCredito / 100);
+  const valorFinanciadoEfetivoCentavos = Math.round(prop.valorFinanciadoCentavos * Math.max(0, fatorCredito));
+  const deficitCreditoCentavos = Math.max(0, prop.valorFinanciadoCentavos - valorFinanciadoEfetivoCentavos);
+
+  if (variacaoCredito < 0) {
+    alertas.push({
+      codigo: 'SALDO_RESIDUAL',
+      severidade: 'BLOQUEANTE',
+      titulo: `Déficit de Financiamento por Redução de Crédito do Banco (${variacaoCredito}%)`,
+      mensagem: `No cenário de estresse, o crédito bancário aprovado foi reduzido em ${Math.abs(variacaoCredito)}% (novo valor financiado: ${toReais(valorFinanciadoEfetivoCentavos)}). O déficit de ${toReais(deficitCreditoCentavos)} foi exigido no caixa familiar na entrega das chaves/repasse como aporte complementar obrigatório.`,
+      acaoSugerida: 'Adicione uma fonte complementar de recursos próprios ou renegocie o valor de repasse com a construtora.'
+    });
+  }
+
+  // 2. Transição da fase de obra e data de início da amortização (Item 4)
+  const mesesObraTotal = Math.max(1, diferencaMesesCivis(projeto.dataBase, dataChavesEfetivaStr));
+  let dataInicioAmortizacao = prop.dataPrimeiroVencimento;
+
+  if (modalidade === 'PLANTA_COM_BANCO_NA_OBRA' || modalidade === 'PLANTA_COM_REPASSE_FUTURO') {
+    const regraInicio = projeto.faseObraConfig?.regraInicioAmortizacao || 'MES_SUBSEQUENTE_CHAVES';
+    if (regraInicio === 'DATA_FIXA' && projeto.faseObraConfig?.dataInicioAmortizacaoFixa) {
+      dataInicioAmortizacao = projeto.faseObraConfig.dataInicioAmortizacaoFixa;
+    } else if (regraInicio === 'MES_CHAVES') {
+      dataInicioAmortizacao = dataChavesEfetivaStr;
+    } else {
+      dataInicioAmortizacao = adicionarMesesCivil(dataChavesEfetivaStr, 1);
+    }
+  }
+
+  // Geração da tabela de amortização com valor efetivo e data de transição pós-chaves
+  const tabelaBancaria = gerarTabelaFinanciamento(
+    prop,
+    cenario.trAnualPercent,
+    dataInicioAmortizacao,
+    cenario.convencaoAmortizacaoTR,
+    valorFinanciadoEfetivoCentavos
+  );
+
+  // Geração dos encargos discriminados da fase de obras
+  const taxaMensalBanco = converterTaxaNominalAnualParaMensal(prop.taxaJurosNominalAnualPercent);
+  const encargosFaseObra: EncargoMensalObraLinha[] = (modalidade === 'PLANTA_COM_BANCO_NA_OBRA')
+    ? gerarEncargosFaseObra(
+        valorFinanciadoEfetivoCentavos,
+        projeto.avaliacaoBancariaCentavos || projeto.precoImovelCentavos,
+        mesesObraTotal,
+        projeto.dataBase,
+        taxaMensalBanco,
+        prop.aliquotaMipInicialPercent,
+        prop.aliquotaDfiMensalCentavos,
+        prop.taxaAdmFixaMensalCentavos,
+        projeto.faseObraConfig,
+        cenario.trAnualPercent
+      )
+    : [];
+
+  // Horizonte contínuo completo com resolução de diasAposMarco
+  const datasObrigacoes = projeto.obrigacoesVendedor.map(o =>
+    resolverDataMarco(o.vencimento, o.vinculoMarco, o.diasAposMarco, marcosMap)
+  );
+  const datasCustos = projeto.custosComplementares.map(c =>
+    resolverDataMarco(c.vencimento, c.vinculoMarco, c.diasAposMarco, marcosMap)
+  );
+
   const todasAsDatas: string[] = [
     projeto.dataBase,
     dataChavesEfetivaStr,
     dataMudancaEfetivaStr,
-    ...projeto.obrigacoesVendedor.map(o => o.vencimento),
-    ...projeto.custosComplementares.map(c => c.vencimento),
+    ...datasObrigacoes,
+    ...datasCustos,
     ...tabelaBancaria.map(p => p.vencimento)
   ];
   const competencias = calcularHorizonteCompetencias(projeto.dataBase, todasAsDatas, 60);
@@ -451,6 +665,13 @@ export function simularProjetoCompleto(
   let maxDeficitReserva = 0;
   let saldoCaixaNasChaves = 0;
 
+  // Acumuladores de custos sem duplicação de principal
+  let recursosPropriosPagosVendedor = 0;
+  let fgtsUtilizado = 0;
+  let subsidioUtilizado = 0;
+  let repasseFinanciado = 0;
+  let custoTotalEncargosObraBanco = 0;
+  let custoTotalFinanciamentoAmortizacaoBanco = 0;
   let custoTotalJurosBanco = 0;
   let custoTotalSegurosBanco = 0;
   let custoTotalTaxasAdmBanco = 0;
@@ -459,10 +680,9 @@ export function simularProjetoCompleto(
   let custoTotalCustosComplementares = 0;
 
   const taxaInccMensal = new Decimal(cenario.inccAnualPercent).dividedBy(100).dividedBy(12);
-  const taxaMensalBanco = converterTaxaNominalAnualParaMensal(prop.taxaJurosNominalAnualPercent);
 
-  // Quantidade de meses de obra até as chaves para cálculo da evolução de juros de obra
-  const mesesObraTotal = Math.max(1, diferencaMesesCivis(projeto.dataBase, dataChavesEfetivaStr));
+  // Flag para aplicar o déficit de crédito bancário uma única vez na data do repasse/chaves
+  let deficitCreditoAplicado = false;
 
   for (let mesIdx = 0; mesIdx < competencias.length; mesIdx++) {
     const competenciaStr = competencias[mesIdx];
@@ -471,13 +691,11 @@ export function simularProjetoCompleto(
     // 1. Receitas familiares
     let receitasDoMesCentavos = 0;
     for (const rec of projeto.receitas) {
-      // Verifica intervalo temporal de vigência (se houver)
       if (rec.mesInicio && competenciaStr < rec.mesInicio) continue;
       if (rec.mesFim && competenciaStr > rec.mesFim) continue;
 
       if (rec.recorrenteMensal || (rec.dataCompetencia && rec.dataCompetencia.startsWith(competenciaStr))) {
         let val = new Decimal(rec.valorCentavos);
-        // Variação de renda (estresse)
         if (cenario.variacaoRendaPercent !== 0) {
           val = val.times(new Decimal(1).plus(new Decimal(cenario.variacaoRendaPercent).dividedBy(100)));
         }
@@ -492,7 +710,7 @@ export function simularProjetoCompleto(
       }
     }
 
-    // 2. Despesas da família (moradia cessa na mudança se configurada - F11, R12)
+    // 2. Despesas da família (moradia cessa na mudança se configurada)
     let despesasVidaCentavos = 0;
     let moradiaAtualCentavos = 0;
     let outrasDividasCentavos = 0;
@@ -503,7 +721,6 @@ export function simularProjetoCompleto(
 
       if (desp.categoria === 'MORADIA_ATUAL') {
         if (desp.cessaNaMudanca && competenciaStr >= compMudanca) {
-          // Cessou aluguel / moradia atual após a mudança efetiva!
           continue;
         }
         moradiaAtualCentavos += desp.valorCentavos;
@@ -532,14 +749,17 @@ export function simularProjetoCompleto(
       }
     }
 
-    // 3. Desembolso com Vendedor & Liquidações de Fontes (F01 / R01 FIX CRÍTICO)
+    // 3. Desembolso com Vendedor & Liquidações de Fontes
     let desembolsoVendedorCentavos = 0;
-    for (const ob of projeto.obrigacoesVendedor) {
+    for (let oIdx = 0; oIdx < projeto.obrigacoesVendedor.length; oIdx++) {
+      const ob = projeto.obrigacoesVendedor[oIdx];
       if (ob.pagoAntecipado) continue;
 
-      const obComp = extrairCompetencia(ob.vencimento);
+      // Resolução de vencimento com diasAposMarco (Item 7)
+      const vencimentoEfetivo = resolverDataMarco(ob.vencimento, ob.vinculoMarco, ob.diasAposMarco, marcosMap);
+      const obComp = extrairCompetencia(vencimentoEfetivo);
+
       if (obComp === competenciaStr) {
-        // Correção INCC contratual sobre obrigações corrigíveis
         let valorCorrigido = new Decimal(ob.valorBaseCentavos);
         if (ob.indiceCorrecao === 'INCC' && taxaInccMensal.greaterThan(0)) {
           const mesesDecorrido = Math.max(0, mesIdx);
@@ -549,45 +769,90 @@ export function simularProjetoCompleto(
 
         const valCent = valorCorrigido.toNumber();
 
-        // Classificação do pagador e impacto no caixa livre (F01)
         const ehRepasseBancario = ob.tipo === 'REPASSE_FINANCIAMENTO' || ob.responsavelPagamento === 'BANCO';
-        const ehFgtsOuSubsidio = 
-          ob.responsavelPagamento === 'FGTS' || 
-          ob.responsavelPagamento === 'SUBSIDIO' ||
-          (ob.tipo === 'OUTRO' && (
-            ob.descricao.toUpperCase().includes('FGTS') || 
-            ob.descricao.toUpperCase().includes('SUBSÍDIO') || 
-            ob.descricao.toUpperCase().includes('SUBSIDIO')
-          ));
-
-        const afetaCaixaLivre = ob.afetaCaixaLivre !== undefined
-          ? ob.afetaCaixaLivre
-          : (!ehRepasseBancario && !ehFgtsOuSubsidio);
+        const ehFgts = ob.responsavelPagamento === 'FGTS' || (ob.tipo === 'OUTRO' && ob.descricao.toUpperCase().includes('FGTS'));
+        const ehSubsidio = ob.responsavelPagamento === 'SUBSIDIO' || (ob.tipo === 'OUTRO' && (ob.descricao.toUpperCase().includes('SUBSÍDIO') || ob.descricao.toUpperCase().includes('SUBSIDIO')));
 
         custoTotalPagoVendedor += valCent;
 
-        if (afetaCaixaLivre) {
-          // Desembolso de recursos próprios do comprador (sai do caixa da família)
-          desembolsoVendedorCentavos += valCent;
+        if (ehRepasseBancario) {
+          // Repasse do banco à construtora (recurso financiado que o comprador pagará ao banco)
+          const repasseRealCentavos = Math.min(valCent, valorFinanciadoEfetivoCentavos);
+          repasseFinanciado += repasseRealCentavos;
+
           eventosDoMes.push({
-            categoria: 'VENDEDOR',
-            descricao: ob.descricao + (ob.indiceCorrecao !== 'SEM_CORRECAO' ? ' (com INCC projetado)' : ''),
+            categoria: 'LIQUIDACAO_DIRETA',
+            descricao: `${ob.descricao} (Repasse Bancário efetivo à Construtora: ${toReais(repasseRealCentavos)})`,
+            valorCentavos: repasseRealCentavos,
+            destinatario: 'VENDEDOR'
+          });
+
+          // Se houve redução de crédito, o déficit precisa ser quitado pelo comprador
+          if (deficitCreditoCentavos > 0 && !deficitCreditoAplicado) {
+            desembolsoVendedorCentavos += deficitCreditoCentavos;
+            recursosPropriosPagosVendedor += deficitCreditoCentavos;
+            deficitCreditoAplicado = true;
+            eventosDoMes.push({
+              categoria: 'VENDEDOR',
+              descricao: `Aporte Complementar de Recursos Próprios (Déficit de ${Math.abs(variacaoCredito)}% no Financiamento Bancário)`,
+              valorCentavos: deficitCreditoCentavos,
+              destinatario: 'VENDEDOR'
+            });
+          }
+        } else if (ehFgts) {
+          fgtsUtilizado += valCent;
+          eventosDoMes.push({
+            categoria: 'LIQUIDACAO_DIRETA',
+            descricao: `${ob.descricao} (Liquidado via FGTS - sem débito no caixa familiar)`,
+            valorCentavos: valCent,
+            destinatario: 'VENDEDOR'
+          });
+        } else if (ehSubsidio) {
+          subsidioUtilizado += valCent;
+          eventosDoMes.push({
+            categoria: 'LIQUIDACAO_DIRETA',
+            descricao: `${ob.descricao} (Liquidado via Subsídio Habitacional MCMV)`,
             valorCentavos: valCent,
             destinatario: 'VENDEDOR'
           });
         } else {
-          // Liquidado via FGTS / Repasse Bancário: NÃO sai do caixa livre familiar (F01, R01)
-          eventosDoMes.push({
-            categoria: 'LIQUIDACAO_DIRETA',
-            descricao: `${ob.descricao} (Liquidado via ${ehRepasseBancario ? 'Repasse Bancário' : 'FGTS/Subsídio'} - sem débito no caixa livre familiar)`,
-            valorCentavos: valCent,
-            destinatario: 'VENDEDOR'
-          });
+          // Recursos próprios pagos pelo comprador
+          const afetaCaixa = ob.afetaCaixaLivre !== undefined ? ob.afetaCaixaLivre : true;
+          if (afetaCaixa) {
+            desembolsoVendedorCentavos += valCent;
+            recursosPropriosPagosVendedor += valCent;
+            eventosDoMes.push({
+              categoria: 'VENDEDOR',
+              descricao: ob.descricao + (ob.indiceCorrecao !== 'SEM_CORRECAO' ? ' (com INCC projetado)' : ''),
+              valorCentavos: valCent,
+              destinatario: 'VENDEDOR'
+            });
+          } else {
+            eventosDoMes.push({
+              categoria: 'LIQUIDACAO_DIRETA',
+              descricao: `${ob.descricao} (Liquidado direto sem débito em caixa)`,
+              valorCentavos: valCent,
+              destinatario: 'VENDEDOR'
+            });
+          }
         }
       }
     }
 
-    // Reativação da dívida do Bônus de Pontualidade nas chaves se configurado (F12, R17)
+    // Se houve déficit de crédito e não havia linha de repasse no mês, aplica no mês das chaves
+    if (deficitCreditoCentavos > 0 && !deficitCreditoAplicado && competenciaStr === compChaves) {
+      desembolsoVendedorCentavos += deficitCreditoCentavos;
+      recursosPropriosPagosVendedor += deficitCreditoCentavos;
+      deficitCreditoAplicado = true;
+      eventosDoMes.push({
+        categoria: 'VENDEDOR',
+        descricao: `Aporte Complementar de Recursos Próprios (Déficit de ${Math.abs(variacaoCredito)}% no Crédito Bancário)`,
+        valorCentavos: deficitCreditoCentavos,
+        destinatario: 'VENDEDOR'
+      });
+    }
+
+    // Reativação da dívida do Bônus de Pontualidade nas chaves se configurado
     if (
       projeto.descontosBonus?.ativo &&
       cenario.perderBonusPontualidade &&
@@ -597,6 +862,7 @@ export function simularProjetoCompleto(
     ) {
       const valBonus = projeto.descontosBonus.bonusPontualidadeCentavos;
       desembolsoVendedorCentavos += valBonus;
+      recursosPropriosPagosVendedor += valBonus;
       custoTotalPagoVendedor += valBonus;
       eventosDoMes.push({
         categoria: 'VENDEDOR',
@@ -606,48 +872,68 @@ export function simularProjetoCompleto(
       });
     }
 
-    // 4. Desembolso Banco & Tratamento de Modalidades (F06, R09)
+    // 4. Desembolso Banco & Tratamento de Modalidades
     let desembolsoBancoCentavos = 0;
     let saldoDevedorBanco = 0;
 
-    const modalidade = projeto.modalidade || 'PRONTO';
-
     if (modalidade === 'PLANTA_COM_BANCO_NA_OBRA' && competenciaStr < compChaves) {
-      // Fase de Obra com Banco na Obra: Juros de Evolução de Obra proporcionais ao avanço
-      const mesesDecorridosObra = Math.min(mesesObraTotal, mesIdx + 1);
-      const progressoObra = Math.min(1, Math.max(0.1, mesesDecorridosObra / mesesObraTotal));
-      const principalDisponibilizado = new Decimal(prop.valorFinanciadoCentavos).times(progressoObra);
-      
-      const jurosObraCentavos = taxaMensalBanco.isZero() ? 0 : principalDisponibilizado.times(taxaMensalBanco).round().toNumber();
-      const segurosObraCentavos = prop.aliquotaDfiMensalCentavos + prop.taxaAdmFixaMensalCentavos;
-      const encargoObraCentavos = jurosObraCentavos + segurosObraCentavos;
+      // Fase de Obra com Banco na Obra: Encargos discriminados de evolução de obra
+      const encargoObra = encargosFaseObra.find(e => e.competencia === competenciaStr);
+      if (encargoObra) {
+        desembolsoBancoCentavos += encargoObra.encargoTotalMesCentavos;
+        saldoDevedorBanco = encargoObra.saldoLiberadoCentavos;
 
-      desembolsoBancoCentavos += encargoObraCentavos;
-      saldoDevedorBanco = principalDisponibilizado.round().toNumber();
+        custoTotalEncargosObraBanco += encargoObra.encargoTotalMesCentavos;
+        custoTotalJurosBanco += encargoObra.jurosObraCentavos;
+        custoTotalSegurosBanco += (encargoObra.seguroMipCentavos + encargoObra.seguroDfiCentavos);
+        custoTotalTaxasAdmBanco += encargoObra.taxaAdministracaoCentavos;
+        custoTotalPagoBanco += encargoObra.encargoTotalMesCentavos;
 
-      custoTotalJurosBanco += jurosObraCentavos;
-      custoTotalSegurosBanco += prop.aliquotaDfiMensalCentavos;
-      custoTotalTaxasAdmBanco += prop.taxaAdmFixaMensalCentavos;
-      custoTotalPagoBanco += encargoObraCentavos;
-
-      eventosDoMes.push({
-        categoria: 'ENCARGO_BANCO',
-        descricao: `Juros de Evolução de Obra (~${Math.round(progressoObra * 100)}% de avanço físico)`,
-        valorCentavos: encargoObraCentavos,
-        destinatario: 'BANCO'
-      });
+        if (encargoObra.jurosObraCentavos > 0) {
+          eventosDoMes.push({
+            categoria: 'ENCARGO_BANCO_JUROS_OBRA',
+            descricao: `Juros de Evolução de Obra (~${encargoObra.percentualAvancoAcumulado}% liberado)`,
+            valorCentavos: encargoObra.jurosObraCentavos,
+            destinatario: 'BANCO'
+          });
+        }
+        if (encargoObra.seguroMipCentavos > 0 || encargoObra.seguroDfiCentavos > 0) {
+          eventosDoMes.push({
+            categoria: 'ENCARGO_BANCO_SEGUROS',
+            descricao: `Seguros na Obra (MIP: ${toReais(encargoObra.seguroMipCentavos)} + DFI: ${toReais(encargoObra.seguroDfiCentavos)})`,
+            valorCentavos: encargoObra.seguroMipCentavos + encargoObra.seguroDfiCentavos,
+            destinatario: 'BANCO'
+          });
+        }
+        if (encargoObra.taxaAdministracaoCentavos > 0) {
+          eventosDoMes.push({
+            categoria: 'ENCARGO_BANCO_TAXA_ADM',
+            descricao: `Taxa de Administração Bancária na Obra`,
+            valorCentavos: encargoObra.taxaAdministracaoCentavos,
+            destinatario: 'BANCO'
+          });
+        }
+        if (encargoObra.atualizacaoMonetariaCentavos > 0) {
+          eventosDoMes.push({
+            categoria: 'ENCARGO_BANCO_ATUALIZACAO',
+            descricao: `Atualização TR na Obra`,
+            valorCentavos: encargoObra.atualizacaoMonetariaCentavos,
+            destinatario: 'BANCO'
+          });
+        }
+      }
     } else if (modalidade === 'PLANTA_COM_REPASSE_FUTURO' && competenciaStr < compChaves) {
-      // Planta com Repasse Futuro: nenhum encargo bancário antes das chaves
+      // Planta com Repasse Futuro: sem cobrança bancária durante a obra
       desembolsoBancoCentavos = 0;
       saldoDevedorBanco = 0;
     } else {
-      // Modalidade Pronto ou fase de amortização pós-chaves
-      // Agrupa todas as parcelas bancárias que caem nesta competência (R09)
+      // Fase de amortização (PRONTO ou pós-chaves): nenhuma das 420 parcelas é pulada!
       const parcelasDoMes = tabelaBancaria.filter(p => p.vencimento.startsWith(competenciaStr));
       for (const parcelaBanco of parcelasDoMes) {
         desembolsoBancoCentavos += parcelaBanco.encargoTotalCentavos;
         saldoDevedorBanco = parcelaBanco.saldoDevedorFinalCentavos;
 
+        custoTotalFinanciamentoAmortizacaoBanco += parcelaBanco.encargoTotalCentavos;
         custoTotalJurosBanco += parcelaBanco.jurosCentavos;
         custoTotalSegurosBanco += (parcelaBanco.seguroMipCentavos + parcelaBanco.seguroDfiCentavos);
         custoTotalTaxasAdmBanco += parcelaBanco.taxaAdmCentavos;
@@ -662,19 +948,14 @@ export function simularProjetoCompleto(
       }
     }
 
-    // 5. Custos Complementares (ITBI, Registro, Reforma, Mudança)
+    // 5. Custos Complementares (ITBI, Registro, Reforma, Mudança) com diasAposMarco
     let custosComplementaresCentavos = 0;
     for (const custo of projeto.custosComplementares) {
       if (custo.financiadoPeloBanco) continue;
 
-      let dataCustoIso = custo.vencimento;
-      if (custo.vinculoMarco === 'CHAVES') {
-        dataCustoIso = dataChavesEfetivaStr;
-      } else if (custo.vinculoMarco === 'MUDANCA') {
-        dataCustoIso = dataMudancaEfetivaStr;
-      }
-
+      const dataCustoIso = resolverDataMarco(custo.vencimento, custo.vinculoMarco, custo.diasAposMarco, marcosMap);
       const custoComp = extrairCompetencia(dataCustoIso);
+
       if (custoComp === competenciaStr) {
         let valCent = custo.valorCentavos;
         if (custo.categoria === 'REFORMA_INSTALACAO' && cenario.aumentoCustosInstalacaoPercent !== 0) {
@@ -692,13 +973,19 @@ export function simularProjetoCompleto(
       }
     }
 
-    // 6. Cálculo do saldo devedor restante do vendedor (F09, R14)
+    // 6. Evolução contratual do saldo devedor do vendedor (Item 7)
     let saldoDevedorVendedorCentavos = 0;
     for (const ob of projeto.obrigacoesVendedor) {
       if (ob.pagoAntecipado) continue;
-      const obComp = extrairCompetencia(ob.vencimento);
+      const vencEfetivo = resolverDataMarco(ob.vencimento, ob.vinculoMarco, ob.diasAposMarco, marcosMap);
+      const obComp = extrairCompetencia(vencEfetivo);
       if (obComp > competenciaStr) {
-        saldoDevedorVendedorCentavos += ob.valorBaseCentavos;
+        let val = new Decimal(ob.valorBaseCentavos);
+        if (ob.indiceCorrecao === 'INCC' && taxaInccMensal.greaterThan(0)) {
+          const mFuturos = Math.max(0, mesIdx);
+          val = val.times(new Decimal(1).plus(taxaInccMensal).pow(mFuturos)).round();
+        }
+        saldoDevedorVendedorCentavos += val.toNumber();
       }
     }
 
@@ -776,7 +1063,7 @@ export function simularProjetoCompleto(
     });
   }
 
-  // Comprometimento da renda no primeiro mês (F11, R15)
+  // Comprometimento da renda no primeiro mês bancário
   const rendaPrimeiroMes = linhasCaixa[0]?.receitasCentavos || 0;
   const encargoPrimeiroMes = tabelaBancaria[0]?.encargoTotalCentavos || 0;
   let taxaComprometimento = 0;
@@ -823,6 +1110,15 @@ export function simularProjetoCompleto(
     }
   }
 
+  // Fix Auditoria Item 1: Custo Efetivo Total da Aquisição SEM duplicação do principal financiado
+  // O que a família realmente desembolsa:
+  // Recursos Próprios Pagos ao Vendedor + FGTS Usado + Total Pago ao Banco + Custos Complementares
+  const custoAquisicaoEfetivoCentavos = 
+    recursosPropriosPagosVendedor + 
+    fgtsUtilizado + 
+    custoTotalPagoBanco + 
+    custoTotalCustosComplementares;
+
   const indicadores: IndicadoresConsolidados = {
     desembolsoInicialContratacaoCentavos: linhasCaixa[0]?.desembolsoVendedorCentavos + (linhasCaixa[0]?.custosComplementaresCentavos || 0),
     maiorDesembolsoMensalCentavos: maiorDesembolso,
@@ -833,13 +1129,22 @@ export function simularProjetoCompleto(
     necessidadeAdicionalRecursosCentavos: menorSaldoCaixa < 0 ? Math.abs(menorSaldoCaixa) : 0,
     necessidadeParaPreservarReservaCentavos: maxDeficitReserva,
     saldoCaixaNasChavesCentavos: saldoCaixaNasChaves,
+    
+    // Decomposição limpa sem duplicação de principal
+    recursosPropriosPagosVendedorCentavos: recursosPropriosPagosVendedor,
+    fgtsUtilizadoCentavos: fgtsUtilizado,
+    subsidioUtilizadoCentavos: subsidioUtilizado,
+    repasseFinanciadoCentavos: repasseFinanciado,
+    custoTotalEncargosObraBancoCentavos: custoTotalEncargosObraBanco,
+    custoTotalFinanciamentoAmortizacaoBancoCentavos: custoTotalFinanciamentoAmortizacaoBanco,
+    
     custoTotalJurosBancoCentavos: custoTotalJurosBanco,
     custoTotalSegurosBancoCentavos: custoTotalSegurosBanco,
     custoTotalTaxasAdmBancoCentavos: custoTotalTaxasAdmBanco,
     custoTotalPagoBancoCentavos: custoTotalPagoBanco,
     custoTotalPagoVendedorCentavos: custoTotalPagoVendedor,
     custoTotalCustosComplementaresCentavos: custoTotalCustosComplementares,
-    custoAquisicaoEfetivoCentavos: custoTotalPagoBanco + custoTotalPagoVendedor + custoTotalCustosComplementares,
+    custoAquisicaoEfetivoCentavos,
     taxaComprometimentoRendaPrimeiroMesPercent: taxaComprometimento
   };
 
@@ -848,6 +1153,7 @@ export function simularProjetoCompleto(
     reconciliacao,
     indicadores,
     alertas,
-    tabelaBancariaUsada: tabelaBancaria
+    tabelaBancariaUsada: tabelaBancaria,
+    encargosFaseObraUsados: encargosFaseObra
   };
 }

@@ -4,23 +4,38 @@
  */
 
 import React, { useState } from 'react';
-import { ProjetoFinanciamento, PropostaBancaria, SistemaAmortizacao } from '../../types';
+import Decimal from 'decimal.js';
+import { 
+  ProjetoFinanciamento, 
+  PropostaBancaria, 
+  SistemaAmortizacao, 
+  ConfiguracaoFaseObra 
+} from '../../types';
 import { 
   toReais, 
   toPercent, 
   converterTaxaNominalAnualParaMensal, 
   gerarTabelaSAC, 
-  gerarTabelaPrice 
+  gerarTabelaPrice,
+  gerarEncargosFaseObra
 } from '../../domain/financial';
+import { 
+  calcularAliquotaMIPParticipantes, 
+  TABELA_FAIXAS_ETARIAS_MIP,
+  ParticipanteMIP
+} from '../../domain/pdfParser';
 import { 
   Building2, 
   ArrowRightLeft, 
   Calculator, 
   ShieldCheck, 
-  FileSpreadsheet, 
-  HelpCircle,
-  TrendingDown,
-  Percent
+  HardHat,
+  Users,
+  ChevronRight,
+  Info,
+  Calendar,
+  Layers,
+  Sparkles
 } from 'lucide-react';
 
 interface BancoViewProps {
@@ -31,8 +46,45 @@ interface BancoViewProps {
 export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjeto }) => {
   const prop = projeto.propostaBancaria;
   const [modoComparacao, setModoComparacao] = useState<'ISOLADO' | 'SAC_VS_PRICE'>('SAC_VS_PRICE');
+  const [mostrarSimuladorMIP, setMostrarSimuladorMIP] = useState(false);
+  const [participantes, setParticipantes] = useState<ParticipanteMIP[]>([
+    { id: 'p1', nome: 'Proponente Principal', idade: 32, percentualRenda: 70 },
+    { id: 'p2', nome: 'Coobrigado / Cônjuge', idade: 29, percentualRenda: 30 }
+  ]);
 
   const taxaMensal = converterTaxaNominalAnualParaMensal(prop.taxaJurosNominalAnualPercent);
+
+  // Configuração da Fase de Obra
+  const faseObraConfig: ConfiguracaoFaseObra = projeto.faseObraConfig ?? {
+    ativo: projeto.modalidade === 'PLANTA_COM_BANCO_NA_OBRA',
+    duracaoMesesPrevista: 24,
+    regraLiberacao: 'CURVA_S',
+    baseCalculoMipObra: 'SALDO_LIBERADO',
+    aliquotaMipObraPercent: prop.aliquotaMipInicialPercent,
+    baseCalculoDfiObra: 'VALOR_AVALIACAO',
+    aliquotaDfiObraCentavos: prop.aliquotaDfiMensalCentavos,
+    taxaAdmObraCentavos: prop.taxaAdmFixaMensalCentavos,
+    indiceAtualizacaoObra: 'SEM_CORRECAO',
+    trObraAnualPercent: 0,
+    regraInicioAmortizacao: 'MES_SUBSEQUENTE_CHAVES'
+  };
+
+  // Encargos da Fase de Obra
+  const encargosObra = gerarEncargosFaseObra(
+    prop.valorFinanciadoCentavos,
+    projeto.avaliacaoBancariaCentavos || projeto.precoImovelCentavos,
+    faseObraConfig.duracaoMesesPrevista,
+    projeto.dataBase,
+    taxaMensal,
+    faseObraConfig.aliquotaMipObraPercent ?? prop.aliquotaMipInicialPercent,
+    faseObraConfig.aliquotaDfiObraCentavos ?? prop.aliquotaDfiMensalCentavos,
+    faseObraConfig.taxaAdmObraCentavos ?? prop.taxaAdmFixaMensalCentavos,
+    faseObraConfig,
+    faseObraConfig.trObraAnualPercent || 0
+  );
+
+  const totalJurosObra = encargosObra.reduce((acc, l) => acc + l.jurosObraCentavos, 0);
+  const totalEncargosObra = encargosObra.reduce((acc, l) => acc + l.encargoTotalMesCentavos, 0);
 
   // Curvas calculadas para comparativo
   const tabelaSAC = gerarTabelaSAC(
@@ -42,7 +94,9 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
     prop.dataPrimeiroVencimento,
     prop.taxaAdmFixaMensalCentavos,
     prop.aliquotaMipInicialPercent,
-    prop.aliquotaDfiMensalCentavos
+    prop.aliquotaDfiMensalCentavos,
+    new Decimal(0),
+    projeto.convencaoTR
   );
 
   const tabelaPrice = gerarTabelaPrice(
@@ -52,7 +106,9 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
     prop.dataPrimeiroVencimento,
     prop.taxaAdmFixaMensalCentavos,
     prop.aliquotaMipInicialPercent,
-    prop.aliquotaDfiMensalCentavos
+    prop.aliquotaDfiMensalCentavos,
+    new Decimal(0),
+    projeto.convencaoTR
   );
 
   // Totais SAC
@@ -81,6 +137,18 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
     });
   };
 
+  const handleAtualizarFaseObra = (updates: Partial<ConfiguracaoFaseObra>) => {
+    onAtualizarProjeto({
+      ...projeto,
+      faseObraConfig: {
+        ...faseObraConfig,
+        ...updates
+      }
+    });
+  };
+
+  const aliquotaMIPPonderada = calcularAliquotaMIPParticipantes(participantes);
+
   return (
     <div className="space-y-6">
       {/* Cabeçalho */}
@@ -88,10 +156,10 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
         <div>
           <h2 className="text-xl font-bold tracking-tight text-stone-900 flex items-center gap-2">
             <Building2 className="w-5 h-5 text-amber-600" />
-            3. Financiamento Bancário & Sistema de Amortização
+            3. Financiamento Bancário, Seguros & Fase de Obra
           </h2>
           <p className="text-sm text-stone-600 mt-1">
-            Configure taxas, prazos e compare o comportamento das parcelas no sistema SAC versus Price.
+            Configure taxas contratuais, apólice habitacional (MIP/DFI) e simule os encargos da fase de obra (juros de obra).
           </p>
         </div>
 
@@ -122,11 +190,11 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
         </div>
       </div>
 
-      {/* Formulário de Parâmetros Contratuais */}
+      {/* 1. Condições Gerais de Financiamento */}
       <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-xs">
         <h3 className="text-sm font-bold text-stone-900 mb-4 flex items-center gap-2">
           <Calculator className="w-4 h-4 text-stone-700" />
-          Condições de Financiamento Propostas
+          Condições Contratuais do Empréstimo
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -146,7 +214,7 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
               <option value="TAXA_ZERO">Taxa Zero / Sem Juros</option>
             </select>
             <span className="text-[11px] text-stone-500 mt-1 block">
-              {prop.sistema === 'SAC' ? 'Juros caem todo mês conforme amortiza' : 'Parcelas financeiras constantes'}
+              {prop.sistema === 'SAC' ? 'Juros decaem proporcionalmente ao saldo' : 'Encargos com parcelas fixas'}
             </span>
           </div>
 
@@ -163,13 +231,13 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
                 const num = parseFloat(e.target.value.replace(/\D/g, '')) || 0;
                 handleAtualizarProposta({ 
                   valorFinanciadoCentavos: num,
-                  valorEntradaCentavos: projeto.precoImovelCentavos - num
+                  valorEntradaCentavos: Math.max(0, projeto.precoImovelCentavos - num)
                 });
               }}
               className="w-full px-3 py-2 text-sm bg-stone-50 border border-stone-300 rounded-lg focus:ring-2 focus:ring-amber-500 font-bold text-stone-900"
             />
             <span className="text-[11px] text-stone-500 mt-1 block">
-              Saldo liberado ao vendedor
+              Montante bancário concedido
             </span>
           </div>
 
@@ -194,11 +262,11 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
               </span>
             </div>
             <span className="text-[11px] text-stone-500 mt-1 block">
-              Máximo bancário padrão: 420 meses
+              Máximo SFH / CAIXA: 420 meses
             </span>
           </div>
 
-          {/* Taxa de Juros Nominal Anual */}
+          {/* Taxa Nominal */}
           <div>
             <label className="block text-xs font-semibold text-stone-700 mb-1" htmlFor="input-taxa-nominal">
               Taxa Nominal Anual
@@ -221,26 +289,350 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
         </div>
 
         {/* Encargos Acessórios e CET */}
-        <div className="mt-4 pt-4 border-t border-stone-200 grid grid-cols-1 sm:grid-cols-3 gap-4 bg-stone-50/60 p-3 rounded-lg">
+        <div className="mt-4 pt-4 border-t border-stone-200 grid grid-cols-1 sm:grid-cols-4 gap-4 bg-stone-50/60 p-3 rounded-lg text-xs">
           <div>
-            <span className="text-xs text-stone-600 block">CET (Custo Efetivo Total) Informado:</span>
+            <span className="text-stone-600 block">CET Informado:</span>
             <span className="text-sm font-bold text-stone-900">{prop.cetAnualPercent}% a.a.</span>
-            <span className="text-[10px] text-stone-500 block">Resolução CMN 4.881 (inclui seguros e tarifas)</span>
+            <span className="text-[10px] text-stone-500 block">Resolução CMN 4.881</span>
           </div>
           <div>
-            <span className="text-xs text-stone-600 block">Taxa de Administração Mensal:</span>
+            <span className="text-stone-600 block">Taxa de Administração:</span>
             <span className="text-sm font-bold text-stone-900">{toReais(prop.taxaAdmFixaMensalCentavos)} / mês</span>
-            <span className="text-[10px] text-stone-500 block">Cobrança fixa bancária na prestação</span>
+            <span className="text-[10px] text-stone-500 block">Tarifa mensal de serviço</span>
           </div>
           <div>
-            <span className="text-xs text-stone-600 block">Tarifa de Avaliação do Imóvel:</span>
+            <span className="text-stone-600 block">Tarifa de Avaliação:</span>
             <span className="text-sm font-bold text-stone-900">{toReais(prop.tarifaAvaliacaoAVistaCentavos)}</span>
-            <span className="text-[10px] text-stone-500 block">Paga na contratação do crédito</span>
+            <span className="text-[10px] text-stone-500 block">Paga na contratação</span>
+          </div>
+          <div>
+            <span className="text-stone-600 block">Convenção de TR:</span>
+            <select
+              value={projeto.convencaoTR || 'RECALCULO_MENSAL_PADRAO_SFH'}
+              onChange={(e) => onAtualizarProjeto({ ...projeto, convencaoTR: e.target.value as any })}
+              className="mt-0.5 w-full bg-white border border-stone-300 rounded px-2 py-1 text-xs font-semibold text-stone-800"
+            >
+              <option value="RECALCULO_MENSAL_PADRAO_SFH">Recálculo Mensal Padrão SFH</option>
+              <option value="AMORTIZACAO_ORIGINAL_COM_RESIDUO">Amortização Original com Resíduo</option>
+            </select>
           </div>
         </div>
       </div>
 
-      {/* Painel Comparativo SAC vs Price */}
+      {/* 2. Seguros Obrigatórios Habitacionais (MIP & DFI) */}
+      <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-stone-200 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              Seguros Obrigatórios (MIP e DFI)
+            </h3>
+            <p className="text-xs text-stone-600 mt-0.5">
+              Exigidos por lei no SFH/SFI. O MIP varia por faixa etária dos proponentes; o DFI incide sobre o valor de avaliação.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMostrarSimuladorMIP(!mostrarSimuladorMIP)}
+            className="text-xs px-3 py-1.5 rounded-lg border border-stone-300 bg-stone-50 hover:bg-stone-100 font-semibold text-stone-800 flex items-center gap-1.5 transition"
+          >
+            <Users className="w-3.5 h-3.5 text-stone-600" />
+            {mostrarSimuladorMIP ? 'Ocultar Proponentes' : 'Simular Proponentes & Composição de Renda'}
+          </button>
+        </div>
+
+        {/* Simulador de Proponentes */}
+        {mostrarSimuladorMIP && (
+          <div className="p-4 bg-emerald-50/40 border border-emerald-200 rounded-xl space-y-3 text-xs">
+            <div className="flex items-center justify-between">
+              <div className="font-bold text-emerald-950 flex items-center gap-1.5">
+                <Sparkles className="w-4 h-4 text-emerald-600" />
+                Cálculo da Taxa MIP por Idade & Composição de Renda (Apólice CAIXA/SUSEP)
+              </div>
+              <span className="text-[11px] font-semibold text-emerald-900">
+                Alíquota Ponderada: {aliquotaMIPPonderada.toFixed(8)}% / mês
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {participantes.map((part, idx) => (
+                <div key={part.id || idx} className="p-3 bg-white border border-emerald-200 rounded-lg space-y-2">
+                  <div className="font-semibold text-stone-900 flex justify-between">
+                    <span>{part.nome}</span>
+                    <span className="text-stone-500 font-normal">Participante {idx + 1}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] text-stone-600 font-medium">Idade (anos):</label>
+                      <input
+                        type="number"
+                        min="18"
+                        max="80"
+                        value={part.idade}
+                        onChange={(e) => {
+                          const novaIdade = parseInt(e.target.value, 10) || 18;
+                          const novos = [...participantes];
+                          novos[idx] = { ...novos[idx], idade: novaIdade };
+                          setParticipantes(novos);
+                        }}
+                        className="w-full px-2 py-1 border border-stone-300 rounded text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] text-stone-600 font-medium">% da Renda:</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={part.percentualRenda}
+                        onChange={(e) => {
+                          const novoPerc = parseFloat(e.target.value) || 0;
+                          const novos = [...participantes];
+                          novos[idx] = { ...novos[idx], percentualRenda: novoPerc };
+                          setParticipantes(novos);
+                        }}
+                        className="w-full px-2 py-1 border border-stone-300 rounded text-xs"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="button"
+                onClick={() => handleAtualizarProposta({ aliquotaMipInicialPercent: aliquotaMIPPonderada })}
+                className="px-3 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white font-bold rounded-lg transition"
+              >
+                Aplicar {aliquotaMIPPonderada.toFixed(6)}% à Proposta Bancária
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Inputs de Seguros */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
+          <div>
+            <label className="block font-semibold text-stone-700 mb-1" htmlFor="input-aliquota-mip">
+              Alíquota Mensal MIP (Morte e Invalidez)
+            </label>
+            <div className="relative">
+              <input
+                id="input-aliquota-mip"
+                type="number"
+                step="0.000001"
+                value={prop.aliquotaMipInicialPercent}
+                onChange={(e) => handleAtualizarProposta({ aliquotaMipInicialPercent: parseFloat(e.target.value) || 0 })}
+                className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-lg font-bold text-stone-900"
+              />
+              <span className="absolute right-3 top-2 text-stone-500 font-semibold">% / mês</span>
+            </div>
+            <span className="text-[10px] text-stone-500 mt-1 block">
+              Incide mensalmente sobre o saldo devedor
+            </span>
+          </div>
+
+          <div>
+            <label className="block font-semibold text-stone-700 mb-1" htmlFor="input-dfi-mensal">
+              Seguro DFI (Danos Físicos ao Imóvel)
+            </label>
+            <input
+              id="input-dfi-mensal"
+              type="text"
+              value={((prop.aliquotaDfiMensalCentavos || 0) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              onChange={(e) => {
+                const num = parseFloat(e.target.value.replace(/\D/g, '')) || 0;
+                handleAtualizarProposta({ aliquotaDfiMensalCentavos: num });
+              }}
+              className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-lg font-bold text-stone-900"
+            />
+            <span className="text-[10px] text-stone-500 mt-1 block">
+              Valor fixo mensal com base na avaliação
+            </span>
+          </div>
+
+          <div>
+            <label className="block font-semibold text-stone-700 mb-1" htmlFor="input-seguro-a-vista">
+              Seguro à Vista (Taxa de Abertura)
+            </label>
+            <input
+              id="input-seguro-a-vista"
+              type="text"
+              value={((prop.seguroAVistaCentavos || 0) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              onChange={(e) => {
+                const num = parseFloat(e.target.value.replace(/\D/g, '')) || 0;
+                handleAtualizarProposta({ seguroAVistaCentavos: num });
+              }}
+              className="w-full px-3 py-2 bg-stone-50 border border-stone-300 rounded-lg font-bold text-stone-900"
+            />
+            <span className="text-[10px] text-stone-500 mt-1 block">
+              Paga no ato da assinatura contratual
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Encargos da Fase de Obra (Crédito Associativo / MCMV Planta) */}
+      <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-stone-200 pb-3">
+          <div>
+            <h3 className="text-sm font-bold text-stone-900 flex items-center gap-2">
+              <HardHat className="w-4 h-4 text-amber-600" />
+              Encargos da Fase de Obra (Juros de Obra)
+            </h3>
+            <p className="text-xs text-stone-600 mt-0.5">
+              Aplicável a imóveis na planta com repasse financeiro durante a construção. O mutuário paga juros proporcionais ao saldo liberado, seguros e taxa de administração sem amortizar o principal.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-xs font-semibold text-stone-700 cursor-pointer flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={faseObraConfig.ativo}
+                onChange={(e) => handleAtualizarFaseObra({ ativo: e.target.checked })}
+                className="rounded border-stone-300 text-amber-600 focus:ring-amber-500"
+              />
+              Simular Fase de Obra
+            </label>
+          </div>
+        </div>
+
+        {faseObraConfig.ativo ? (
+          <div className="space-y-4">
+            {/* Parâmetros da Obra */}
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs bg-stone-50/70 p-3 rounded-lg border border-stone-200">
+              <div>
+                <label className="block text-stone-600 font-semibold mb-1">Duração da Obra (meses):</label>
+                <input
+                  type="number"
+                  min="6"
+                  max="48"
+                  value={faseObraConfig.duracaoMesesPrevista}
+                  onChange={(e) => handleAtualizarFaseObra({ duracaoMesesPrevista: parseInt(e.target.value, 10) || 24 })}
+                  className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded font-semibold text-stone-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-stone-600 font-semibold mb-1">Curva de Liberação:</label>
+                <select
+                  value={faseObraConfig.regraLiberacao}
+                  onChange={(e) => handleAtualizarFaseObra({ regraLiberacao: e.target.value as any })}
+                  className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded font-semibold text-stone-900"
+                >
+                  <option value="CURVA_S">Curva em S (Realista Construtora)</option>
+                  <option value="LINEAR">Linear (Evolução Constante)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-stone-600 font-semibold mb-1">Base de Cálculo MIP:</label>
+                <select
+                  value={faseObraConfig.baseCalculoMipObra}
+                  onChange={(e) => handleAtualizarFaseObra({ baseCalculoMipObra: e.target.value as any })}
+                  className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded font-semibold text-stone-900"
+                >
+                  <option value="SALDO_LIBERADO">Sobre Saldo Liberado</option>
+                  <option value="VALOR_FINANCIADO_TOTAL">Sobre Financiamento Total</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-stone-600 font-semibold mb-1">TR na Obra (% a.a.):</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={faseObraConfig.trObraAnualPercent || 0}
+                  onChange={(e) => handleAtualizarFaseObra({ trObraAnualPercent: parseFloat(e.target.value) || 0 })}
+                  className="w-full px-2 py-1.5 bg-white border border-stone-300 rounded font-semibold text-stone-900"
+                />
+              </div>
+            </div>
+
+            {/* Resumo da Obra */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 bg-amber-50/50 border border-amber-200 rounded-lg">
+                <span className="text-stone-500 block text-[10px]">1º Encargo de Obra</span>
+                <strong className="text-amber-900 text-sm">
+                  {toReais(encargosObra[0]?.encargoTotalMesCentavos || 0)}
+                </strong>
+                <span className="text-[10px] text-stone-500 block mt-0.5">Mês 1 da construção</span>
+              </div>
+              <div className="p-3 bg-amber-50/50 border border-amber-200 rounded-lg">
+                <span className="text-stone-500 block text-[10px]">Último Encargo de Obra</span>
+                <strong className="text-amber-900 text-sm">
+                  {toReais(encargosObra[encargosObra.length - 1]?.encargoTotalMesCentavos || 0)}
+                </strong>
+                <span className="text-[10px] text-stone-500 block mt-0.5">Prestes a entregar as chaves</span>
+              </div>
+              <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
+                <span className="text-stone-500 block text-[10px]">Total Juros de Obra</span>
+                <strong className="text-stone-900 text-sm">
+                  {toReais(totalJurosObra)}
+                </strong>
+                <span className="text-[10px] text-stone-500 block mt-0.5">Custo a fundo perdido</span>
+              </div>
+              <div className="p-3 bg-stone-50 border border-stone-200 rounded-lg">
+                <span className="text-stone-500 block text-[10px]">Total Desembolsado na Obra</span>
+                <strong className="text-stone-900 text-sm">
+                  {toReais(totalEncargosObra)}
+                </strong>
+                <span className="text-[10px] text-stone-500 block mt-0.5">Juros + Seguros + Tarifa Adm</span>
+              </div>
+            </div>
+
+            {/* Tabela de Evolução da Fase de Obra */}
+            <div className="border border-stone-200 rounded-xl overflow-hidden">
+              <div className="bg-stone-100/80 px-4 py-2 border-b border-stone-200 font-bold text-xs text-stone-800 flex justify-between">
+                <span>Cronograma Mês a Mês da Fase de Obra ({faseObraConfig.duracaoMesesPrevista} Meses)</span>
+                <span className="text-stone-500 font-normal">Sem amortização de saldo</span>
+              </div>
+              <div className="max-h-52 overflow-y-auto">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-stone-50 text-[10px] text-stone-600 font-semibold border-b border-stone-200 sticky top-0">
+                    <tr>
+                      <th className="px-3 py-2">Mês</th>
+                      <th className="px-3 py-2">Competência</th>
+                      <th className="px-3 py-2">% Obra</th>
+                      <th className="px-3 py-2">Saldo Liberado</th>
+                      <th className="px-3 py-2">Juros Obra</th>
+                      <th className="px-3 py-2">MIP</th>
+                      <th className="px-3 py-2">DFI</th>
+                      <th className="px-3 py-2">Adm</th>
+                      <th className="px-3 py-2 text-right">Encargo Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-100">
+                    {encargosObra.map((linha) => (
+                      <tr key={linha.mesNumero} className="hover:bg-stone-50">
+                        <td className="px-3 py-1.5 font-bold text-stone-900">{linha.mesNumero}</td>
+                        <td className="px-3 py-1.5 text-stone-600">{linha.competencia}</td>
+                        <td className="px-3 py-1.5 font-semibold text-stone-800">{linha.percentualAvancoAcumulado}%</td>
+                        <td className="px-3 py-1.5 text-stone-700">{toReais(linha.saldoLiberadoCentavos)}</td>
+                        <td className="px-3 py-1.5 text-amber-900 font-medium">{toReais(linha.jurosObraCentavos)}</td>
+                        <td className="px-3 py-1.5 text-stone-600">{toReais(linha.seguroMipCentavos)}</td>
+                        <td className="px-3 py-1.5 text-stone-600">{toReais(linha.seguroDfiCentavos)}</td>
+                        <td className="px-3 py-1.5 text-stone-600">{toReais(linha.taxaAdministracaoCentavos)}</td>
+                        <td className="px-3 py-1.5 font-bold text-stone-900 text-right">{toReais(linha.encargoTotalMesCentavos)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-4 bg-stone-50 rounded-lg text-xs text-stone-600 flex items-center gap-2">
+            <Info className="w-4 h-4 text-stone-400 shrink-0" />
+            <span>
+              A fase de obra está desativada para este projeto. O financiamento segue o fluxo de amortização direta a partir da data de entrega ou contratação. Marque a caixa acima caso adquira imóvel na planta com repasse financeiro na obra.
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* 4. Comparação Normalizada: SAC vs Price */}
       {modoComparacao === 'SAC_VS_PRICE' && (
         <div 
           id="painel-comparativo-sac-price"

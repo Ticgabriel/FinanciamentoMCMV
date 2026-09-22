@@ -46,6 +46,53 @@ export function diasNoMes(ano: number, mes: number): number {
 }
 
 /**
+ * Adiciona N dias a uma data civil no formato ISO 'YYYY-MM-DD',
+ * sem interferência de fuso horário UTC.
+ */
+export function adicionarDiasCivil(dataBaseStr: string, dias: number): string {
+  if (dias === 0 || !dataBaseStr) return dataBaseStr;
+  const p = parseDataCivil(dataBaseStr);
+  // Usa construtor de data local
+  const d = new Date(p.ano, p.mes - 1, p.dia);
+  d.setDate(d.getDate() + dias);
+  return formatarDataCivil({
+    ano: d.getFullYear(),
+    mes: d.getMonth() + 1,
+    dia: d.getDate()
+  });
+}
+
+/**
+ * Resolve data efetiva de uma obrigação ou custo complementar vinculada a um marco temporal.
+ * Se houver vínculo (ex: 'CHAVES' ou 'CONTRATACAO') e diasAposMarco (ex: +30, +60 dias),
+ * calcula a data exata somando os dias ao marco. Caso contrário, usa a data fixa informada.
+ */
+export function resolverDataMarco(
+  dataFixa: string,
+  vinculoMarco?: 'DATA_FIXA' | 'CONTRATACAO' | 'CHAVES' | 'MUDANCA',
+  diasAposMarco?: number,
+  marcosMap?: Record<string, string>
+): string {
+  if (!vinculoMarco || vinculoMarco === 'DATA_FIXA' || !marcosMap) {
+    return dataFixa;
+  }
+
+  let dataMarcoReferencia: string | undefined;
+  if (vinculoMarco === 'CONTRATACAO') {
+    dataMarcoReferencia = marcosMap['CONTRATO_BANCO'] || marcosMap['COMPRA'] || dataFixa;
+  } else if (vinculoMarco === 'CHAVES') {
+    dataMarcoReferencia = marcosMap['CHAVES'] || dataFixa;
+  } else if (vinculoMarco === 'MUDANCA') {
+    dataMarcoReferencia = marcosMap['MUDANCA_EFETIVA'] || marcosMap['CHAVES'] || dataFixa;
+  }
+
+  if (!dataMarcoReferencia) return dataFixa;
+
+  const dias = diasAposMarco !== undefined ? diasAposMarco : 0;
+  return adicionarDiasCivil(dataMarcoReferencia, dias);
+}
+
+/**
  * Adiciona N meses a uma data civil preservando o dia âncora contratual.
  * Se o mês de destino possuir menos dias que o dia âncora (ex: 31 em fevereiro),
  * ajusta para o último dia válido daquele mês (28 ou 29).
