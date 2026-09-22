@@ -87,7 +87,9 @@ export const ImportarModal: React.FC<ImportarModalProps> = ({
           pagoAntecipado: false,
           indiceCorrecao: 'SEM_CORRECAO',
           taxaJurosMensalPercent: 0,
-          status: 'CONFIRMADO'
+          status: 'CONFIRMADO',
+          responsavelPagamento: 'COMPRADOR',
+          afetaCaixaLivre: true
         },
         {
           id: 'ob_repasse',
@@ -98,7 +100,9 @@ export const ImportarModal: React.FC<ImportarModalProps> = ({
           pagoAntecipado: false,
           indiceCorrecao: 'SEM_CORRECAO',
           taxaJurosMensalPercent: 0,
-          status: 'CONFIRMADO'
+          status: 'CONFIRMADO',
+          responsavelPagamento: 'BANCO',
+          afetaCaixaLivre: false
         }
       ]
     };
@@ -225,41 +229,55 @@ Seguro a vista: R$ 52,13`);
               {/* Resultado da Extração e Divergências */}
               {resultadoExtracao && (
                 <div className="p-4 rounded-xl border border-stone-200 bg-stone-50 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-stone-900 text-sm">
-                      Dados Identificados ({resultadoExtracao.dadosExtraidos.sistema})
-                    </span>
-                    <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold">
-                      {resultadoExtracao.confiancaPercent}% de Confiança
-                    </span>
-                  </div>
+                  {resultadoExtracao.erro ? (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2.5 text-amber-900">
+                      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                      <div>
+                        <strong className="block font-semibold">Nenhum dado bancário reconhecido</strong>
+                        <p className="text-xs text-amber-800">{resultadoExtracao.erro}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-stone-900 text-sm">
+                          Dados Identificados ({resultadoExtracao.dadosExtraidos.sistema})
+                        </span>
+                        <span className={`px-2 py-0.5 rounded font-bold ${
+                          resultadoExtracao.confiancaPercent >= 75 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                        }`}>
+                          {resultadoExtracao.confiancaPercent}% de Confiança ({resultadoExtracao.status})
+                        </span>
+                      </div>
 
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    <div>
-                      <span className="text-stone-500 block">Preço:</span>
-                      <strong className="text-stone-900">{toReais(resultadoExtracao.dadosExtraidos.precoImovelCentavos || 0)}</strong>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Financiado:</span>
-                      <strong className="text-stone-900">{toReais(resultadoExtracao.dadosExtraidos.valorFinanciadoCentavos || 0)}</strong>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Entrada:</span>
-                      <strong className="text-stone-900">{toReais(resultadoExtracao.dadosExtraidos.valorEntradaCentavos || 0)}</strong>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Taxa Nominal:</span>
-                      <strong className="text-stone-900">{resultadoExtracao.dadosExtraidos.taxaJurosNominalAnualPercent}% a.a.</strong>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">CET Anual:</span>
-                      <strong className="text-stone-900">{resultadoExtracao.dadosExtraidos.cetAnualPercent}% a.a.</strong>
-                    </div>
-                    <div>
-                      <span className="text-stone-500 block">Prazo:</span>
-                      <strong className="text-stone-900">{resultadoExtracao.dadosExtraidos.prazoMeses} meses</strong>
-                    </div>
-                  </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        <div>
+                          <span className="text-stone-500 block">Preço:</span>
+                          <strong className="text-stone-900">{toReais(resultadoExtracao.dadosExtraidos.precoImovelCentavos || 0)}</strong>
+                        </div>
+                        <div>
+                          <span className="text-stone-500 block">Financiado:</span>
+                          <strong className="text-stone-900">{toReais(resultadoExtracao.dadosExtraidos.valorFinanciadoCentavos || 0)}</strong>
+                        </div>
+                        <div>
+                          <span className="text-stone-500 block">Entrada:</span>
+                          <strong className="text-stone-900">{toReais(resultadoExtracao.dadosExtraidos.valorEntradaCentavos || 0)}</strong>
+                        </div>
+                        <div>
+                          <span className="text-stone-500 block">Taxa Nominal:</span>
+                          <strong className="text-stone-900">{resultadoExtracao.dadosExtraidos.taxaJurosNominalAnualPercent}% a.a.</strong>
+                        </div>
+                        <div>
+                          <span className="text-stone-500 block">CET Anual:</span>
+                          <strong className="text-stone-900">{resultadoExtracao.dadosExtraidos.cetAnualPercent || 0}% a.a.</strong>
+                        </div>
+                        <div>
+                          <span className="text-stone-500 block">Prazo:</span>
+                          <strong className="text-stone-900">{resultadoExtracao.dadosExtraidos.prazoMeses} meses</strong>
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   {/* Divergências Documentadas */}
                   {resultadoExtracao.divergenciasDetectadas.length > 0 && (

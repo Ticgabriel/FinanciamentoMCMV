@@ -17,17 +17,38 @@ export interface ExtracaoSimulacaoResultado {
   }[];
   linhasTabela: ParcelaBancoLinha[];
   confiancaPercent: number;
+  status: StatusDado;
   textoOriginalAmostra: string;
+  erro?: string;
+  camposDetectados: string[];
 }
 
 /**
- * Analisa o texto bruto de uma simulação da CAIXA ou bancária e extrai os parâmetros estruturados
+ * Analisa o texto bruto de uma simulação ou proposta bancária (ex: CAIXA).
+ * Corrige F02, R05, R06:
+ * - Não inventa números (400k, 279k, 420m) se os campos não estiverem no texto.
+ * - Confiança é calculada dinamicamente baseada nos dados encontrados.
+ * - Divergências só são registradas se ambos os dados conflitantes forem encontrados no documento.
  */
 export function analisarTextoSimulacaoBancaria(texto: string): ExtracaoSimulacaoResultado {
   const divergencias: ExtracaoSimulacaoResultado['divergenciasDetectadas'] = [];
+  const camposDetectados: string[] = [];
 
-  // Padrões de busca em regex robustos para formatos CAIXA / Bancos
-  const matchPreco = texto.match(/valor\s+(?:de\s+)?(?:compra\s+e\s+venda|do\s+im[oó]vel)[\s:]*R?\$?\s*([\d.,]+)/i);
+  if (!texto || texto.trim().length === 0) {
+    return {
+      dadosExtraidos: {},
+      divergenciasDetectadas: [],
+      linhasTabela: [],
+      confiancaPercent: 0,
+      status: 'NAO_INFORMADO',
+      textoOriginalAmostra: '',
+      erro: 'Nenhum texto fornecido para análise.',
+      camposDetectados: []
+    };
+  }
+
+  // Expressões regulares de extração
+  const matchPreco = texto.match(/valor\s+(?:de\s+)?(?:compra\s+e\s+venda|do\s+im[oó]vel|avalia[cç][aã]o)[\s:]*R?\$?\s*([\d.,]+)/i);
   const matchFinanciado = texto.match(/valor\s+(?:de\s+)?financiamento[\s:]*R?\$?\s*([\d.,]+)/i);
   const matchEntrada = texto.match(/valor\s+(?:de\s+)?entrada[\s:]*R?\$?\s*([\d.,]+)/i);
   const matchPrazo = texto.match(/prazo[\s:]*(\d+)\s*(?:meses)?/i);
@@ -38,93 +59,149 @@ export function analisarTextoSimulacaoBancaria(texto: string): ExtracaoSimulacao
   const matchPrimeiroEncargo = texto.match(/(?:primeiro|1[oº])\s+encargo[\s:]*R?\$?\s*([\d.,]+)/i);
   const matchTarifaAvaliacao = texto.match(/tarifa\s+(?:de\s+)?avalia[cç][aã]o[\s:]*R?\$?\s*([\d.,]+)/i);
   const matchSeguroAVista = texto.match(/seguro\s+[aà]\s+vista[\s:]*R?\$?\s*([\d.,]+)/i);
+  const matchDataPrimeiroVenc = texto.match(/(?:data\s+do\s+)?(?:1[oº]|primeiro)\s+vencimento[\s:]*(\d{2}[/-]\d{2}[/-]\d{4}|\d{4}-\d{2}-\d{2})/i);
+  const matchSomatorio = texto.match(/somat[oó]rio\s+(?:das\s+)?parcelas[\s:]*R?\$?\s*([\d.,]+)/i);
+  const matchUltimaPrestacao = texto.match(/[uú]ltima\s+presta[cç][aã]o[\s:]*R?\$?\s*([\d.,]+)/i);
+  const matchMip = texto.match(/(?:seguro\s+)?mip\*?[\s:]*R?\$?\s*([\d.,]+)/i);
+  const matchDfi = texto.match(/(?:seguro\s+)?dfi(?:\/dfc)?\*?[\s:]*R?\$?\s*([\d.,]+)/i);
+  const matchTaxaAdm = texto.match(/taxa\s+(?:de\s+)?administra[cç][aã]o[\s:]*R?\$?\s*([\d.,]+)/i);
 
-  const sistema: 'SAC' | 'PRICE' = /price/i.test(texto) ? 'PRICE' : 'SAC';
-
-  function parseMoedaCentavos(valStr?: string): number {
-    if (!valStr) return 0;
+  function parseMoedaCentavos(valStr?: string): number | undefined {
+    if (!valStr) return undefined;
     const limpo = valStr.replace(/\./g, '').replace(',', '.').trim();
     const num = parseFloat(limpo);
-    return isNaN(num) ? 0 : Math.round(num * 100);
+    return isNaN(num) ? undefined : Math.round(num * 100);
   }
 
-  function parsePorcentagem(valStr?: string): number {
-    if (!valStr) return 0;
+  function parsePorcentagem(valStr?: string): number | undefined {
+    if (!valStr) return undefined;
     const limpo = valStr.replace(',', '.').trim();
     const num = parseFloat(limpo);
-    return isNaN(num) ? 0 : num;
+    return isNaN(num) ? undefined : num;
   }
 
-  const precoCentavos = matchPreco ? parseMoedaCentavos(matchPreco[1]) : 40000000;
-  const financiadoCentavos = matchFinanciado ? parseMoedaCentavos(matchFinanciado[1]) : (sistema === 'SAC' ? 27923401 : 32000000);
-  const entradaCentavos = matchEntrada ? parseMoedaCentavos(matchEntrada[1]) : (precoCentavos - financiadoCentavos);
-  const prazoMeses = matchPrazo ? parseInt(matchPrazo[1], 10) : 420;
-  const taxaNominal = matchTaxaNominal ? parsePorcentagem(matchTaxaNominal[1]) : 7.66;
-  const taxaEfetiva = matchTaxaEfetiva ? parsePorcentagem(matchTaxaEfetiva[1]) : 7.93;
-  const cet = matchCET ? parsePorcentagem(matchCET[1]) : (sistema === 'SAC' ? 8.69 : 8.58);
-  const primeiraPrestacao = matchPrimeiraPrestacao ? parseMoedaCentavos(matchPrimeiraPrestacao[1]) : (sistema === 'SAC' ? 252441 : 227485);
-  const primeiroEncargo = matchPrimeiroEncargo ? parseMoedaCentavos(matchPrimeiroEncargo[1]) : (sistema === 'SAC' ? 252436 : 227484);
-  const tarifaAvaliacao = matchTarifaAvaliacao ? parseMoedaCentavos(matchTarifaAvaliacao[1]) : (sistema === 'SAC' ? 418851 : 480000);
-  const seguroAVista = matchSeguroAVista ? parseMoedaCentavos(matchSeguroAVista[1]) : (sistema === 'SAC' ? 5213 : 5560);
+  const precoCentavos = parseMoedaCentavos(matchPreco?.[1]);
+  if (precoCentavos !== undefined) camposDetectados.push('Preço do Imóvel');
 
-  // Registro das divergências documentadas na seção 2.1
-  if (primeiraPrestacao !== primeiroEncargo) {
+  const financiadoCentavos = parseMoedaCentavos(matchFinanciado?.[1]);
+  if (financiadoCentavos !== undefined) camposDetectados.push('Valor Financiado');
+
+  const entradaCentavos = parseMoedaCentavos(matchEntrada?.[1]);
+  if (entradaCentavos !== undefined) camposDetectados.push('Valor de Entrada');
+
+  const prazoMeses = matchPrazo ? parseInt(matchPrazo[1], 10) : undefined;
+  if (prazoMeses !== undefined) camposDetectados.push('Prazo');
+
+  const taxaNominal = parsePorcentagem(matchTaxaNominal?.[1]);
+  if (taxaNominal !== undefined) camposDetectados.push('Taxa Nominal');
+
+  const taxaEfetiva = parsePorcentagem(matchTaxaEfetiva?.[1]);
+  if (taxaEfetiva !== undefined) camposDetectados.push('Taxa Efetiva');
+
+  const cet = parsePorcentagem(matchCET?.[1]);
+  if (cet !== undefined) camposDetectados.push('CET');
+
+  const primeiraPrestacao = parseMoedaCentavos(matchPrimeiraPrestacao?.[1]);
+  if (primeiraPrestacao !== undefined) camposDetectados.push('Primeira Prestação');
+
+  const primeiroEncargo = parseMoedaCentavos(matchPrimeiroEncargo?.[1]);
+  if (primeiroEncargo !== undefined) camposDetectados.push('Primeiro Encargo');
+
+  const tarifaAvaliacao = parseMoedaCentavos(matchTarifaAvaliacao?.[1]);
+  if (tarifaAvaliacao !== undefined) camposDetectados.push('Tarifa de Avaliação');
+
+  const seguroAVista = parseMoedaCentavos(matchSeguroAVista?.[1]);
+  if (seguroAVista !== undefined) camposDetectados.push('Seguro à Vista');
+
+  const somatorioParcelas = parseMoedaCentavos(matchSomatorio?.[1]);
+  if (somatorioParcelas !== undefined) camposDetectados.push('Somatório das Parcelas');
+
+  const ultimaPrestacao = parseMoedaCentavos(matchUltimaPrestacao?.[1]);
+  if (ultimaPrestacao !== undefined) camposDetectados.push('Última Prestação');
+
+  const mipCentavos = parseMoedaCentavos(matchMip?.[1]);
+  const dfiCentavos = parseMoedaCentavos(matchDfi?.[1]) ?? 2840;
+  const taxaAdmCentavos = parseMoedaCentavos(matchTaxaAdm?.[1]) ?? 2500;
+
+  // Se o MIP foi identificado no documento, calcula a alíquota mensal proporcional real
+  const aliquotaMipPercent = (mipCentavos && financiadoCentavos && financiadoCentavos > 0)
+    ? (mipCentavos / financiadoCentavos) * 100
+    : 0.00848034;
+
+  // Sistema de amortização
+  const sistema: 'SAC' | 'PRICE' = /price/i.test(texto) ? 'PRICE' : 'SAC';
+  if (/price/i.test(texto) || /sac/i.test(texto)) camposDetectados.push(`Sistema ${sistema}`);
+
+  // Se nenhum parâmetro bancário relevante foi detectado (R05)
+  if (camposDetectados.length === 0 || (!financiadoCentavos && !prazoMeses && !taxaNominal)) {
+    return {
+      dadosExtraidos: {},
+      divergenciasDetectadas: [],
+      linhasTabela: [],
+      confiancaPercent: 0,
+      status: 'NAO_INFORMADO',
+      textoOriginalAmostra: texto.slice(0, 300),
+      erro: 'Nenhum parâmetro de financiamento bancário reconhecido no texto fornecido. Verifique se o conteúdo colado contém dados da simulação.',
+      camposDetectados: []
+    };
+  }
+
+  // Cálculo de confiança proporcional aos campos essenciais encontrados
+  const camposEssenciais = [financiadoCentavos, prazoMeses, taxaNominal, precoCentavos];
+  const totalEssenciaisEncontrados = camposEssenciais.filter(c => c !== undefined).length;
+  const confianca = Math.round((totalEssenciaisEncontrados / 4) * 70 + (camposDetectados.length / 10) * 30);
+  const status: StatusDado = confianca >= 80 ? 'CONFIRMADO' : (confianca >= 40 ? 'INFORMADO' : 'ESTIMADO');
+
+  // Divergência: Somente registra se AMBOS os valores foram encontrados no texto (F02)
+  if (primeiraPrestacao !== undefined && primeiroEncargo !== undefined && primeiraPrestacao !== primeiroEncargo) {
     divergencias.push({
       campo: 'Primeira Prestação vs 1º Encargo Mensal',
-      origemResumo: `Resumo: R$ ${(primeiraPrestacao/100).toFixed(2)}`,
-      origemTabela: `Tabela: R$ ${(primeiroEncargo/100).toFixed(2)}`,
-      diferenca: `R$ ${((primeiraPrestacao - primeiroEncargo)/100).toFixed(2)}`,
-      explicacao: 'O somatório do resumo reflete a coluna Prestação pura sem tarifas acessórias, enquanto o primeiro encargo na tabela mensal inclui a composição de seguros e tarifas.'
+      origemResumo: `Resumo: R$ ${(primeiraPrestacao / 100).toFixed(2)}`,
+      origemTabela: `Tabela: R$ ${(primeiroEncargo / 100).toFixed(2)}`,
+      diferenca: `R$ ${Math.abs((primeiraPrestacao - primeiroEncargo) / 100).toFixed(2)}`,
+      explicacao: 'A prestação no resumo reflete a amortização + juros sem tarifas acessórias, enquanto o primeiro encargo na tabela mensal inclui a composição de seguros e taxa de administração.'
     });
   }
 
-  divergencias.push({
-    campo: 'Seguro DFI (Danos Físicos ao Imóvel)',
-    origemResumo: 'Composição Inicial: R$ 0,00',
-    origemTabela: 'Primeira Linha da Tabela Mensal: R$ 28,40',
-    diferenca: 'R$ 28,40',
-    explicacao: 'No demonstrativo da CAIXA, o DFI aparece zerado no quadro de composição do encargo inicial mas passa a ser faturado na 1ª parcela de amortização.'
-  });
-
-  if (sistema === 'PRICE') {
-    divergencias.push({
-      campo: 'Último Encargo Price',
-      origemResumo: 'Quadro Resumo: R$ 2.219,25',
-      origemTabela: 'Última Linha da Tabela (Mês 420): R$ 2.213,01',
-      diferenca: 'R$ 6,24',
-      explicacao: 'Ajuste de resíduo de arredondamento aplicado pelo banco na última parcela da tabela Price.'
-    });
+  // Gera tabela apenas se houver dados essenciais mínimos
+  let linhasTabela: ParcelaBancoLinha[] = [];
+  if (financiadoCentavos && prazoMeses && taxaNominal) {
+    const dataInicioIso = '2026-12-01';
+    const taxaMensal = converterTaxaNominalAnualParaMensal(taxaNominal);
+    linhasTabela = sistema === 'SAC'
+      ? gerarTabelaSAC(financiadoCentavos, prazoMeses, taxaMensal, dataInicioIso, taxaAdmCentavos, aliquotaMipPercent, dfiCentavos)
+      : gerarTabelaPrice(financiadoCentavos, prazoMeses, taxaMensal, dataInicioIso, taxaAdmCentavos, aliquotaMipPercent, dfiCentavos);
   }
 
-  // Gera a tabela correspondente
-  const taxaMensal = converterTaxaNominalAnualParaMensal(taxaNominal);
-  const linhasTabela = sistema === 'SAC'
-    ? gerarTabelaSAC(financiadoCentavos, prazoMeses, taxaMensal, '2026-12-01')
-    : gerarTabelaPrice(financiadoCentavos, prazoMeses, taxaMensal, '2026-12-01');
+  const dadosExtraidos: Partial<PropostaBancaria> = {
+    bancoNome: /caixa/i.test(texto) ? 'CAIXA Econômica Federal' : 'Banco Financiador',
+    sistema,
+    precoImovelCentavos: precoCentavos,
+    valorFinanciadoCentavos: financiadoCentavos,
+    valorEntradaCentavos: entradaCentavos,
+    prazoMeses,
+    taxaJurosNominalAnualPercent: taxaNominal,
+    taxaJurosEfetivaAnualPercent: taxaEfetiva,
+    cetAnualPercent: cet,
+    primeiraPrestacaoCentavos: primeiraPrestacao,
+    primeiroEncargoCentavos: primeiroEncargo,
+    tarifaAvaliacaoAVistaCentavos: tarifaAvaliacao,
+    seguroAVistaCentavos: seguroAVista,
+    taxaAdmFixaMensalCentavos: taxaAdmCentavos,
+    aliquotaMipInicialPercent: aliquotaMipPercent,
+    aliquotaDfiMensalCentavos: dfiCentavos,
+    somatorioParcelasCentavos: somatorioParcelas,
+    ultimaPrestacaoCentavos: ultimaPrestacao,
+    status
+  };
 
   return {
-    dadosExtraidos: {
-      bancoNome: 'CAIXA Econômica Federal',
-      sistema,
-      precoImovelCentavos: precoCentavos,
-      valorFinanciadoCentavos: financiadoCentavos,
-      valorEntradaCentavos: entradaCentavos,
-      prazoMeses,
-      taxaJurosNominalAnualPercent: taxaNominal,
-      taxaJurosEfetivaAnualPercent: taxaEfetiva,
-      cetAnualPercent: cet,
-      primeiraPrestacaoCentavos: primeiraPrestacao,
-      primeiroEncargoCentavos: primeiroEncargo,
-      tarifaAvaliacaoAVistaCentavos: tarifaAvaliacao,
-      seguroAVistaCentavos: seguroAVista,
-      taxaAdmFixaMensalCentavos: 2500,
-      aliquotaMipInicialPercent: 0.0163,
-      aliquotaDfiMensalCentavos: 2840,
-      status: 'CONFIRMADO' as StatusDado
-    },
+    dadosExtraidos,
     divergenciasDetectadas: divergencias,
     linhasTabela,
-    confiancaPercent: 98,
-    textoOriginalAmostra: texto.slice(0, 500)
+    confiancaPercent: confianca,
+    status,
+    textoOriginalAmostra: texto.slice(0, 500),
+    camposDetectados
   };
 }

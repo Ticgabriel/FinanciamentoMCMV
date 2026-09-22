@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { ProjetoFinanciamento, FonteRecurso, TipoFonteRecurso } from '../../types';
-import { toReais } from '../../domain/financial';
+import { toReais, calcularReconciliacaoPreco } from '../../domain/financial';
 import { DescontosBonusCard } from '../DescontosBonusCard';
 import { 
   Scale, 
@@ -26,18 +26,13 @@ interface PrecoFontesViewProps {
 }
 
 export const PrecoFontesView: React.FC<PrecoFontesViewProps> = ({ projeto, onAtualizarProjeto }) => {
-  // Fontes destinadas ao preço
+  const reconciliacao = calcularReconciliacaoPreco(projeto);
   const fontesPreco = projeto.fontes.filter(f => f.destino === 'PRECO');
-  const somaFontesPrecoCentavos = fontesPreco.reduce((acc, f) => acc + f.valorCentavos, 0);
-
-  const descontos = projeto.descontosBonus;
-  const descontoComercial = (descontos?.ativo ? descontos.descontoComercialCentavos : 0) || 0;
-  const bonusPontualidade = (descontos?.ativo ? descontos.bonusPontualidadeCentavos : 0) || 0;
-  const totalBeneficios = descontoComercial + bonusPontualidade;
-  const precoEfetivoCentavos = Math.max(0, projeto.precoImovelCentavos - totalBeneficios);
-
-  const diferencaCentavos = precoEfetivoCentavos - somaFontesPrecoCentavos;
-  const reconciliado = Math.abs(diferencaCentavos) <= 1;
+  const somaFontesPrecoCentavos = reconciliacao.somaFontesPrecoCentavos;
+  const precoEfetivoCentavos = reconciliacao.precoEfetivoCentavos ?? projeto.precoImovelCentavos;
+  const diferencaCentavos = reconciliacao.diferencaNaoConciliadaCentavos;
+  const reconciliado = reconciliacao.fechado;
+  const totalBeneficios = (reconciliacao.descontoComercialCentavos || 0) + (reconciliacao.bonusPontualidadeCentavos || 0);
 
   const handleAtualizarFonte = (id: string, updates: Partial<FonteRecurso>) => {
     const novasFontes = projeto.fontes.map(f => f.id === id ? { ...f, ...updates } : f);
@@ -149,6 +144,20 @@ export const PrecoFontesView: React.FC<PrecoFontesViewProps> = ({ projeto, onAtu
             </div>
           </div>
         </div>
+
+        {reconciliacao.pendencias && reconciliacao.pendencias.length > 0 && (
+          <div className="mt-4 pt-3 border-t border-amber-200/80 space-y-1.5">
+            <span className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600" />
+              Pendências e Inconsistências de Auditoria Documental:
+            </span>
+            <ul className="list-disc list-inside text-xs text-amber-900 space-y-1">
+              {reconciliacao.pendencias.map((pend, idx) => (
+                <li key={idx}>{pend}</li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {/* Descontos / Bônus da Construtora e Parcelamento da Entrada */}

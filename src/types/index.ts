@@ -68,6 +68,9 @@ export interface ObrigacaoVendedor {
   indiceCorrecao: 'SEM_CORRECAO' | 'INCC' | 'IPCA' | 'IGPM';
   taxaJurosMensalPercent: number; // ex: 0 ou 1% a.m. pós chaves
   status: StatusDado;
+  responsavelPagamento?: 'COMPRADOR' | 'BANCO' | 'FGTS' | 'SUBSIDIO' | 'CREDITO_DIRETO';
+  afetaCaixaLivre?: boolean; // Se false, é liquidado diretamente por crédito bancário/FGTS sem sair do bolso da família
+  fonteVinculadaId?: string; // Vínculo explícito com a fonte de recurso
 }
 
 export interface CustoComplementar {
@@ -80,6 +83,7 @@ export interface CustoComplementar {
   diasAposMarco?: number;
   financiadoPeloBanco: boolean;
   status: StatusDado;
+  vinculoFinanciamentoId?: string;
 }
 
 export interface ReceitaFamiliar {
@@ -88,6 +92,8 @@ export interface ReceitaFamiliar {
   valorCentavos: number;
   recorrenteMensal: boolean;
   dataCompetencia?: string; // se extraordinária
+  mesInicio?: string; // YYYY-MM
+  mesFim?: string; // YYYY-MM
 }
 
 export interface DespesaFamiliar {
@@ -96,6 +102,8 @@ export interface DespesaFamiliar {
   valorCentavos: number;
   categoria: 'VIDA' | 'OUTRA_DIVIDA' | 'MORADIA_ATUAL';
   cessaNaMudanca: boolean; // ex: aluguel atual
+  mesInicio?: string; // YYYY-MM
+  mesFim?: string; // YYYY-MM
 }
 
 export interface ParcelaBancoLinha {
@@ -132,8 +140,10 @@ export interface PropostaBancaria {
   tarifaAvaliacaoAVistaCentavos: number; // ex: 4188.51
   seguroAVistaCentavos: number; // ex: 52.13
   taxaAdmFixaMensalCentavos: number; // ex: 25.00
-  aliquotaMipInicialPercent: number; // ex: 0.0163%
+  aliquotaMipInicialPercent: number; // ex: 0.00848%
   aliquotaDfiMensalCentavos: number; // ex: 28.40
+  somatorioParcelasCentavos?: number; // Total pago informado na simulação oficial do banco (ex: R$ 654.438,85)
+  ultimaPrestacaoCentavos?: number; // Última prestação informada na simulação (ex: R$ 694,08)
   tabelaImportada?: ParcelaBancoLinha[];
   status: StatusDado;
 }
@@ -209,6 +219,11 @@ export interface ReconciliacaoPreco {
   somaObrigacoesPrecoCentavos: number;
   diferencaNaoConciliadaCentavos: number;
   fechado: boolean;
+  fontesFechamPreco?: boolean;
+  obrigacoesFechamPreco?: boolean;
+  creditoBancoConfere?: boolean;
+  deficitCreditoBancoCentavos?: number;
+  pendencias?: string[];
   detalheFontes: { tipo: string; valorCentavos: number }[];
   detalheObrigacoes: { tipo: string; valorCentavos: number }[];
 }

@@ -27,7 +27,16 @@ export const VendedorView: React.FC<VendedorViewProps> = ({ projeto, onAtualizar
   const totalBaseCentavos = obrigacoes.reduce((acc, o) => acc + o.valorBaseCentavos, 0);
 
   const handleAtualizarObrigacao = (id: string, updates: Partial<ObrigacaoVendedor>) => {
-    const novas = obrigacoes.map(o => o.id === id ? { ...o, ...updates } : o);
+    const novas = obrigacoes.map(o => {
+      if (o.id !== id) return o;
+      const updated = { ...o, ...updates };
+      // Se alterou para REPASSE_FINANCIAMENTO e não especificou responsável, sugere BANCO
+      if (updates.tipo === 'REPASSE_FINANCIAMENTO' && !updates.responsavelPagamento) {
+        updated.responsavelPagamento = 'BANCO';
+        updated.afetaCaixaLivre = false;
+      }
+      return updated;
+    });
     onAtualizarProjeto({
       ...projeto,
       obrigacoesVendedor: novas
@@ -44,7 +53,9 @@ export const VendedorView: React.FC<VendedorViewProps> = ({ projeto, onAtualizar
       pagoAntecipado: false,
       indiceCorrecao: 'INCC',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'COMPRADOR',
+      afetaCaixaLivre: true
     };
     onAtualizarProjeto({
       ...projeto,
@@ -189,11 +200,11 @@ export const VendedorView: React.FC<VendedorViewProps> = ({ projeto, onAtualizar
               </div>
             </div>
 
-            {/* Configuração de Correção Monetária */}
+            {/* Configuração de Correção Monetária e Responsabilidade */}
             <div className="mt-3 pt-3 border-t border-stone-100 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center gap-4">
                 <div className="flex items-center gap-2">
-                  <span className="text-stone-500">Índice de Correção:</span>
+                  <span className="text-stone-500">Índice:</span>
                   <select
                     value={ob.indiceCorrecao}
                     onChange={(e) => handleAtualizarObrigacao(ob.id, { indiceCorrecao: e.target.value as any })}
@@ -206,6 +217,38 @@ export const VendedorView: React.FC<VendedorViewProps> = ({ projeto, onAtualizar
                   </select>
                 </div>
 
+                <div className="flex items-center gap-2">
+                  <span className="text-stone-500">Responsável pelo Pagamento:</span>
+                  <select
+                    value={ob.responsavelPagamento || (ob.tipo === 'REPASSE_FINANCIAMENTO' ? 'BANCO' : 'COMPRADOR')}
+                    onChange={(e) => {
+                      const resp = e.target.value as any;
+                      handleAtualizarObrigacao(ob.id, { 
+                        responsavelPagamento: resp,
+                        afetaCaixaLivre: resp === 'COMPRADOR'
+                      });
+                    }}
+                    className="px-2 py-0.5 text-xs bg-stone-100 border border-stone-300 rounded font-medium text-stone-800"
+                  >
+                    <option value="COMPRADOR">Comprador (Recursos Próprios)</option>
+                    <option value="BANCO">Banco (Financiamento Bancário)</option>
+                    <option value="FGTS">FGTS (Saldo Vinculado)</option>
+                    <option value="SUBSIDIO">Governo / MCMV (Subsídio)</option>
+                    <option value="OUTRO">Outro / Terceiros</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-1.5 text-stone-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={ob.afetaCaixaLivre !== false}
+                    disabled={ob.responsavelPagamento && ob.responsavelPagamento !== 'COMPRADOR'}
+                    onChange={(e) => handleAtualizarObrigacao(ob.id, { afetaCaixaLivre: e.target.checked })}
+                    className="rounded text-amber-600 focus:ring-amber-500 disabled:opacity-40"
+                  />
+                  <span>Debita do Caixa da Família</span>
+                </label>
+
                 <label className="flex items-center gap-1.5 text-stone-600 cursor-pointer">
                   <input
                     type="checkbox"
@@ -213,13 +256,21 @@ export const VendedorView: React.FC<VendedorViewProps> = ({ projeto, onAtualizar
                     onChange={(e) => handleAtualizarObrigacao(ob.id, { pagoAntecipado: e.target.checked })}
                     className="rounded text-amber-600 focus:ring-amber-500"
                   />
-                  <span>Já quitado antes da data-base (não deduz do caixa atual)</span>
+                  <span>Já quitado antes da data-base</span>
                 </label>
               </div>
 
-              <span className="text-[11px] text-stone-400">
-                {ob.indiceCorrecao === 'INCC' ? 'Corrigido acumulado pela taxa projetada no cenário' : 'Valor nominal constante'}
-              </span>
+              <div>
+                {ob.afetaCaixaLivre === false ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                    Não sai do caixa livre (Repasse externo / FGTS / Banco)
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-stone-400">
+                    {ob.indiceCorrecao === 'INCC' ? 'Corrigido acumulado no mês de vencimento' : 'Valor nominal'}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         ))}

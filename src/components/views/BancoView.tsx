@@ -56,12 +56,14 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
   );
 
   // Totais SAC
+  const sacPrestacaoPuraTotal = tabelaSAC.reduce((acc, l) => acc + l.prestacaoCentavos, 0);
   const sacJurosTotal = tabelaSAC.reduce((acc, l) => acc + l.jurosCentavos, 0);
   const sacSegurosTotal = tabelaSAC.reduce((acc, l) => acc + l.seguroMipCentavos + l.seguroDfiCentavos, 0);
   const sacTarifasTotal = tabelaSAC.reduce((acc, l) => acc + l.taxaAdmCentavos, 0);
   const sacEncargoTotal = tabelaSAC.reduce((acc, l) => acc + l.encargoTotalCentavos, 0);
 
   // Totais Price
+  const pricePrestacaoPuraTotal = tabelaPrice.reduce((acc, l) => acc + l.prestacaoCentavos, 0);
   const priceJurosTotal = tabelaPrice.reduce((acc, l) => acc + l.jurosCentavos, 0);
   const priceSegurosTotal = tabelaPrice.reduce((acc, l) => acc + l.seguroMipCentavos + l.seguroDfiCentavos, 0);
   const priceTarifasTotal = tabelaPrice.reduce((acc, l) => acc + l.taxaAdmCentavos, 0);
@@ -294,9 +296,16 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
                   <span className="text-stone-600">Total de Seguros (MIP/DFI):</span>
                   <span className="font-semibold text-stone-900">{toReais(sacSegurosTotal)}</span>
                 </div>
+                <div className="flex justify-between py-1 border-b border-stone-200/60 bg-amber-50/50 px-1.5 rounded">
+                  <span className="text-stone-700 font-medium">Somatório das Prestações (Amort + Juros):</span>
+                  <span className="font-bold text-stone-900">{toReais(sacPrestacaoPuraTotal)}</span>
+                </div>
                 <div className="flex justify-between pt-1 font-bold text-sm">
-                  <span className="text-stone-900">Total Desembolsado ao Banco:</span>
-                  <span className="text-amber-800">{toReais(sacEncargoTotal)}</span>
+                  <div>
+                    <span className="text-stone-900 block">Total Desembolsado ao Banco:</span>
+                    <span className="text-[10px] text-stone-500 font-normal block">Prestações + Seguros + Taxa Adm ({toReais(sacTarifasTotal)})</span>
+                  </div>
+                  <span className="text-amber-800 self-center">{toReais(sacEncargoTotal)}</span>
                 </div>
               </div>
             </div>
@@ -335,9 +344,16 @@ export const BancoView: React.FC<BancoViewProps> = ({ projeto, onAtualizarProjet
                   <span className="text-stone-600">Total de Seguros (MIP/DFI):</span>
                   <span className="font-semibold text-stone-900">{toReais(priceSegurosTotal)}</span>
                 </div>
+                <div className="flex justify-between py-1 border-b border-stone-200/60 bg-stone-100/70 px-1.5 rounded">
+                  <span className="text-stone-700 font-medium">Somatório das Prestações (Amort + Juros):</span>
+                  <span className="font-bold text-stone-900">{toReais(pricePrestacaoPuraTotal)}</span>
+                </div>
                 <div className="flex justify-between pt-1 font-bold text-sm">
-                  <span className="text-stone-900">Total Desembolsado ao Banco:</span>
-                  <span className="text-rose-900">{toReais(priceEncargoTotal)}</span>
+                  <div>
+                    <span className="text-stone-900 block">Total Desembolsado ao Banco:</span>
+                    <span className="text-[10px] text-stone-500 font-normal block">Prestações + Seguros + Taxa Adm ({toReais(priceTarifasTotal)})</span>
+                  </div>
+                  <span className="text-rose-900 self-center">{toReais(priceEncargoTotal)}</span>
                 </div>
               </div>
             </div>

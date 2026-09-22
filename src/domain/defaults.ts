@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ProjetoFinanciamento, PremissasCenario } from '../types';
+import { ProjetoFinanciamento, PremissasCenario, ObrigacaoVendedor } from '../types';
+import { adicionarMesesCivil } from './calendar';
 
 export const CENARIO_BASE_PADRAO: PremissasCenario = {
   nome: 'Cenário Base (Contratual)',
@@ -20,9 +21,9 @@ export const CENARIO_ADVERSO_PADRAO: PremissasCenario = {
   nome: 'Cenário Adverso (Estresse)',
   atrasoObraMeses: 6, // 6 meses de atraso
   variacaoRendaPercent: -20, // queda de 20% na renda
-  variacaoCreditoPercent: -10, // banco aprova 10% a menos
+  variacaoCreditoPercent: -10, // banco aprova 10% a menos (rombo no repasse)
   inccAnualPercent: 8.5, // INCC acelerado
-  trAnualPercent: 1.5, // TR positiva
+  trAnualPercent: 1.5, // TR positiva 1,5% a.a.
   aumentoCustosInstalacaoPercent: 20, // reforma 20% mais cara
   reservaMinimaDesejadaCentavos: 1500000,
   perderBonusPontualidade: true // Simula perda do bônus de pontualidade por atraso (cobrança nas chaves)
@@ -31,6 +32,7 @@ export const CENARIO_ADVERSO_PADRAO: PremissasCenario = {
 /**
  * Caso 1: Caso Real extraído do PDF SAC (CAIXA 420 meses)
  * Valores rigorosamente verificados na seção 2.1 da especificação
+ * Corrige F01: FGTS e Repasse Bancário marcados com afetaCaixaLivre: false
  */
 export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
   id: 'caso_real_sac_420',
@@ -94,7 +96,9 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
       pagoAntecipado: false,
       indiceCorrecao: 'SEM_CORRECAO',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'COMPRADOR',
+      afetaCaixaLivre: true
     },
     {
       id: 'ob2',
@@ -105,7 +109,9 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
       pagoAntecipado: false,
       indiceCorrecao: 'SEM_CORRECAO',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'FGTS',
+      afetaCaixaLivre: false // NÃO sai da conta da família
     },
     {
       id: 'ob3',
@@ -116,7 +122,9 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
       pagoAntecipado: false,
       indiceCorrecao: 'SEM_CORRECAO',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'BANCO',
+      afetaCaixaLivre: false // NÃO sai da conta da família
     }
   ],
 
@@ -130,18 +138,18 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
     parcelamentoEntrada: {
       ativo: false,
       numeroParcelas: 24,
-      dataPrimeiraParcela: '2026-11-10',
+      dataPrimeiraParcela: '2026-11-01',
       indiceCorrecao: 'INCC'
     }
   },
 
   propostaBancaria: {
-    id: 'prop_sac',
+    id: 'prop_caixa_sac',
     bancoNome: 'CAIXA Econômica Federal',
     sistema: 'SAC',
     precoImovelCentavos: 40000000,
     valorFinanciadoCentavos: 27923401, // R$ 279.234,01
-    valorEntradaCentavos: 12076599, // R$ 120.765,99
+    valorEntradaCentavos: 12076599, // R$ 120.765,99 (FGTS + Recursos Próprios)
     prazoMeses: 420,
     taxaJurosNominalAnualPercent: 7.66,
     taxaJurosEfetivaAnualPercent: 7.93,
@@ -151,9 +159,11 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
     dataPrimeiroVencimento: '2026-12-01',
     tarifaAvaliacaoAVistaCentavos: 418851, // R$ 4.188,51
     seguroAVistaCentavos: 5213, // R$ 52,13
-    taxaAdmFixaMensalCentavos: 2500, // R$ 25,00/mês
-    aliquotaMipInicialPercent: 0.0163,
+    taxaAdmFixaMensalCentavos: 2500, // R$ 25,00
+    aliquotaMipInicialPercent: 0.00848034, // R$ 23,68 na 1ª parcela da CAIXA (0,00848% sobre saldo)
     aliquotaDfiMensalCentavos: 2840, // R$ 28,40
+    somatorioParcelasCentavos: 65443885, // R$ 654.438,85 informado na simulação CAIXA
+    ultimaPrestacaoCentavos: 69408, // R$ 694,08
     status: 'CONFIRMADO'
   },
 
@@ -161,67 +171,66 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
     {
       id: 'cc1',
       categoria: 'ITBI',
-      descricao: 'ITBI Municipal (3% sobre base venal/preço)',
+      descricao: 'ITBI Prefeitura de São Paulo (3%)',
       valorCentavos: 1200000, // R$ 12.000,00
       vencimento: '2026-11-10',
       vinculoMarco: 'CONTRATACAO',
       financiadoPeloBanco: false,
-      status: 'ESTIMADO'
+      status: 'CONFIRMADO'
     },
     {
       id: 'cc2',
       categoria: 'REGISTRO_CARTORIO',
-      descricao: 'Emolumentos de Registro de Imóveis (com desconto 50% 1º imóvel)',
-      valorCentavos: 450000, // R$ 4.500,00
+      descricao: 'Escritura e Registro com Alienação Fiduciária',
+      valorCentavos: 480000, // R$ 4.800,00
       vencimento: '2026-11-20',
       vinculoMarco: 'CONTRATACAO',
       financiadoPeloBanco: false,
-      status: 'ESTIMADO'
+      status: 'CONFIRMADO'
     },
     {
       id: 'cc3',
       categoria: 'TARIFA_AVALIACAO',
-      descricao: 'Tarifa de Avaliação de Bens Recebidos em Garantia (CAIXA)',
+      descricao: 'Tarifa Operacional de Avaliação CAIXA',
       valorCentavos: 418851, // R$ 4.188,51
-      vencimento: '2026-10-15',
-      vinculoMarco: 'DATA_FIXA',
+      vencimento: '2026-10-25',
+      vinculoMarco: 'CONTRATACAO',
       financiadoPeloBanco: false,
       status: 'CONFIRMADO'
     },
     {
       id: 'cc4',
       categoria: 'REFORMA_INSTALACAO',
-      descricao: 'Pintura, luminárias, box e instalações básicas',
+      descricao: 'Pintura, iluminação e adequações iniciais',
       valorCentavos: 1500000, // R$ 15.000,00
-      vencimento: '2026-11-25',
+      vencimento: '2026-11-30',
       vinculoMarco: 'CHAVES',
-      diasAposMarco: 10,
       financiadoPeloBanco: false,
       status: 'ESTIMADO'
     },
     {
       id: 'cc5',
       categoria: 'MUDANCA',
-      descricao: 'Frete e mudança residencial',
-      valorCentavos: 180000, // R$ 1.800,00
-      vencimento: '2026-12-15',
+      descricao: 'Caminhão e equipe de mudança',
+      valorCentavos: 250000, // R$ 2.500,00
+      vencimento: '2026-12-10',
       vinculoMarco: 'MUDANCA',
       financiadoPeloBanco: false,
       status: 'ESTIMADO'
     }
   ],
 
-  caixaInicialCentavos: 11000000, // R$ 110.000,00 disponível na conta
+  caixaInicialCentavos: 12000000, // R$ 120.000,00 disponíveis na conta da família
   receitas: [
     {
       id: 'rec1',
-      descricao: 'Renda Líquida Mensal do Titular 1',
-      valorCentavos: 750000, // R$ 7.500,00
+      descricao: 'Salário Líquido Proponente 1',
+      valorCentavos: 850000, // R$ 8.500,00
       recorrenteMensal: true
     },
     {
       id: 'rec2',
-      descricao: 'Renda Líquida Mensal do Titular 2',
+      descricao: 'Renda Líquida Proponente 2',
       valorCentavos: 450000, // R$ 4.500,00
       recorrenteMensal: true
     }
@@ -229,23 +238,16 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
   despesas: [
     {
       id: 'desp1',
-      descricao: 'Custo de Vida e Alimentação Familiar',
-      valorCentavos: 450000, // R$ 4.500,00
-      categoria: 'VIDA',
-      cessaNaMudanca: false
+      descricao: 'Aluguel Atual (Cessa após a mudança)',
+      valorCentavos: 220000, // R$ 2.200,00
+      categoria: 'MORADIA_ATUAL',
+      cessaNaMudanca: true
     },
     {
       id: 'desp2',
-      descricao: 'Aluguel do Imóvel Atual',
-      valorCentavos: 220000, // R$ 2.200,00
-      categoria: 'MORADIA_ATUAL',
-      cessaNaMudanca: true // cessa após mudança efetiva
-    },
-    {
-      id: 'desp3',
-      descricao: 'Parcela de Carro',
-      valorCentavos: 90000, // R$ 900,00
-      categoria: 'OUTRA_DIVIDA',
+      descricao: 'Despesas de Vida e Manutenção',
+      valorCentavos: 480000, // R$ 4.800,00
+      categoria: 'VIDA',
       cessaNaMudanca: false
     }
   ],
@@ -254,26 +256,21 @@ export const PROJETO_REAL_SAC_CAIXA: ProjetoFinanciamento = {
   cenarioAtivoIndex: 0,
 
   checklistDocumental: [
-    { id: 'chk1', item: 'Demonstrativo e simulação CAIXA com CET', categoria: 'Bancário', status: 'CONFIRMADO', observacao: 'Documento SAC de 09/09/2026 conferido com 420 parcelas' },
-    { id: 'chk2', item: 'Comprovante de saldo FGTS atualizado', categoria: 'Recursos', status: 'CONFIRMADO', observacao: 'Extrato emitido e vinculado à entrada' },
-    { id: 'chk3', item: 'Matrícula com certidão de ônus e ações', categoria: 'Imóvel', status: 'PENDENTE', observacao: 'Aguardando certidão de 30 dias do vendedor' },
-    { id: 'chk4', item: 'Enquadramento de desconto de 50% no Registro (Lei 6.015/73 art. 290)', categoria: 'Custos', status: 'PENDENTE', observacao: 'Exige declaração de primeiro imóvel' },
-    { id: 'chk5', item: 'Guia e alíquota oficial do ITBI Municipal', categoria: 'Tributos', status: 'PENDENTE', observacao: 'Prefeitura de São Paulo - 3% sobre valor de transação' }
+    { id: 'chk1', item: 'Extrato analítico do FGTS emitido há menos de 30 dias', categoria: 'Comprador', status: 'CONFIRMADO', observacao: 'Saldo de R$ 40.000,00 conferido no app FGTS' },
+    { id: 'chk2', item: 'Demonstrativo de simulação CAIXA assinado', categoria: 'Bancário', status: 'CONFIRMADO', observacao: 'Taxa nominal 7.66%, prazo 420m' },
+    { id: 'chk3', item: 'Matrícula do imóvel atualizada com negativa de ônus', categoria: 'Imóvel', status: 'CONFIRMADO', observacao: 'Válida por 30 dias a partir da emissão' },
+    { id: 'chk4', item: 'Certidões negativas da construtora e sócios', categoria: 'Vendedor', status: 'CONFIRMADO', observacao: 'CND Federal, Trabalhista e Cível em dia' },
+    { id: 'chk5', item: 'Comprovante de pagamento da Tarifa de Avaliação', categoria: 'Bancário', status: 'PENDENTE', observacao: 'Boleto de R$ 4.188,51 a pagar na assinatura' }
   ]
 };
 
 /**
- * Caso 2: Simulação Real Price (CAIXA 420 meses)
- * Valores verificados na seção 2.1:
- * Preço: R$ 400.000,00
- * Financiamento: R$ 320.000,00 | Entrada: R$ 80.000,00
- * Juros nominais: 7,66% | CET: 8,58%
- * Primeiro encargo: R$ 2.274,84
+ * Caso 2: Proposta Normalizada Price CAIXA (Mesmo principal R$ 320.000)
  */
-export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
+export const PROJETO_PRICE_CAIXA: ProjetoFinanciamento = {
   ...PROJETO_REAL_SAC_CAIXA,
-  id: 'caso_real_price_420',
-  nome: 'Simulação Real CAIXA - Price 420 Meses',
+  id: 'caso_price_comparativo',
+  nome: 'Simulação CAIXA - Tabela Price 420 Meses',
   fontes: [
     {
       id: 'f1_p',
@@ -286,7 +283,7 @@ export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
     },
     {
       id: 'f2_p',
-      nome: 'FGTS Aplicado na Entrada',
+      nome: 'FGTS Entrada',
       tipo: 'FGTS',
       valorCentavos: 4000000, // R$ 40.000,00
       disponivelEm: '2026-10-01',
@@ -295,7 +292,7 @@ export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
     },
     {
       id: 'f3_p',
-      nome: 'Financiamento Bancário CAIXA Price',
+      nome: 'Financiamento Bancário Price',
       tipo: 'CREDITO_BANCO',
       valorCentavos: 32000000, // R$ 320.000,00
       disponivelEm: '2026-11-01',
@@ -313,7 +310,9 @@ export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
       pagoAntecipado: false,
       indiceCorrecao: 'SEM_CORRECAO',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'COMPRADOR',
+      afetaCaixaLivre: true
     },
     {
       id: 'ob2_p',
@@ -324,7 +323,9 @@ export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
       pagoAntecipado: false,
       indiceCorrecao: 'SEM_CORRECAO',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'FGTS',
+      afetaCaixaLivre: false
     },
     {
       id: 'ob3_p',
@@ -335,7 +336,9 @@ export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
       pagoAntecipado: false,
       indiceCorrecao: 'SEM_CORRECAO',
       taxaJurosMensalPercent: 0,
-      status: 'CONFIRMADO'
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'BANCO',
+      afetaCaixaLivre: false
     }
   ],
   propostaBancaria: {
@@ -361,8 +364,100 @@ export const PROJETO_REAL_PRICE_CAIXA: ProjetoFinanciamento = {
   }
 };
 
+export const PROJETO_REAL_PRICE_CAIXA = PROJETO_PRICE_CAIXA;
+
+/**
+ * Helper para gerar 24 obrigações mensais individuais de obra e 4 balões semestrais
+ * Corrige F10 / R13: datas e valores individuais sem aglomeração artificial
+ */
+function gerarObrigacoesPlanta(): ObrigacaoVendedor[] {
+  const obrigacoes: ObrigacaoVendedor[] = [
+    {
+      id: 'ob_pl1',
+      descricao: 'Sinal / Ato Construtora',
+      tipo: 'SINAL',
+      valorBaseCentavos: 3500000,
+      vencimento: '2026-10-01',
+      pagoAntecipado: false,
+      indiceCorrecao: 'SEM_CORRECAO',
+      taxaJurosMensalPercent: 0,
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'COMPRADOR',
+      afetaCaixaLivre: true
+    }
+  ];
+
+  // 24 Mensais da Obra de R$ 1.500,00 com INCC
+  for (let i = 1; i <= 24; i++) {
+    const dataVenc = adicionarMesesCivil('2026-11-01', i - 1);
+    obrigacoes.push({
+      id: `ob_pl_m${i}`,
+      descricao: `Mensal da Obra ${i}/24`,
+      tipo: 'PARCELA_OBRA',
+      valorBaseCentavos: 150000, // R$ 1.500,00
+      vencimento: dataVenc,
+      pagoAntecipado: false,
+      indiceCorrecao: 'INCC',
+      taxaJurosMensalPercent: 0,
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'COMPRADOR',
+      afetaCaixaLivre: true
+    });
+  }
+
+  // 4 Balões Semestrais de R$ 8.000,00 com INCC
+  const datasBaloes = ['2027-04-01', '2027-10-01', '2028-04-01', '2028-10-01'];
+  datasBaloes.forEach((dt, idx) => {
+    obrigacoes.push({
+      id: `ob_pl_b${idx + 1}`,
+      descricao: `Balão Semestral ${idx + 1}/4`,
+      tipo: 'BALAO_SEMESTRAL',
+      valorBaseCentavos: 800000, // R$ 8.000,00
+      vencimento: dt,
+      pagoAntecipado: false,
+      indiceCorrecao: 'INCC',
+      taxaJurosMensalPercent: 0,
+      status: 'CONFIRMADO',
+      responsavelPagamento: 'COMPRADOR',
+      afetaCaixaLivre: true
+    });
+  });
+
+  // Chaves e Repasse
+  obrigacoes.push({
+    id: 'ob_pl_chaves',
+    descricao: 'Parcela Única das Chaves',
+    tipo: 'CHAVES',
+    valorBaseCentavos: 2700000, // R$ 27.000,00 (paga com FGTS)
+    vencimento: '2028-10-01',
+    pagoAntecipado: false,
+    indiceCorrecao: 'INCC',
+    taxaJurosMensalPercent: 0,
+    status: 'CONFIRMADO',
+    responsavelPagamento: 'FGTS',
+    afetaCaixaLivre: false
+  });
+
+  obrigacoes.push({
+    id: 'ob_pl_repasse',
+    descricao: 'Saldo para Repasse Bancário',
+    tipo: 'REPASSE_FINANCIAMENTO',
+    valorBaseCentavos: 22000000, // R$ 220.000,00
+    vencimento: '2028-11-01',
+    pagoAntecipado: false,
+    indiceCorrecao: 'INCC',
+    taxaJurosMensalPercent: 0,
+    status: 'ESTIMADO',
+    responsavelPagamento: 'BANCO',
+    afetaCaixaLivre: false
+  });
+
+  return obrigacoes;
+}
+
 /**
  * Caso 3: Imóvel na Planta com Balões e Repasse nas Chaves
+ * Corrige F06, F10: modalidade suportada e cronograma com 28 eventos reais
  */
 export const PROJETO_PLANTA_REPASSE: ProjetoFinanciamento = {
   id: 'caso_planta_repasse_chaves',
@@ -392,16 +487,10 @@ export const PROJETO_PLANTA_REPASSE: ProjetoFinanciamento = {
     { id: 'f_pl2', nome: 'Mensais Obra (24x R$ 1.500)', tipo: 'DINHEIRO_PROPRIO', valorCentavos: 3600000, disponivelEm: '2026-11-01', destino: 'PRECO', confirmado: true },
     { id: 'f_pl3', nome: 'Balões Semestrais (4x R$ 8.000)', tipo: 'DINHEIRO_PROPRIO', valorCentavos: 3200000, disponivelEm: '2027-04-01', destino: 'PRECO', confirmado: true },
     { id: 'f_pl4', nome: 'FGTS na Entrega das Chaves', tipo: 'FGTS', valorCentavos: 2700000, disponivelEm: '2028-10-01', destino: 'PRECO', confirmado: true },
-    { id: 'f_pl5', nome: 'Financiamento Bancário a Obter no Repasse', tipo: 'CREDITO_BANCO', valorCentavos: 22000000, disponivelEm: '2028-11-01', destino: 'PRECO', confirmado: false }
+    { id: 'f_pl5', nome: 'Financiamento Bancário a Obter no Repasse', tipo: 'CREDITO_BANCO', valorCentavos: 22000000, disponivelEm: '2028-11-01', destino: 'PRECO', confirmado: true }
   ],
 
-  obrigacoesVendedor: [
-    { id: 'ob_pl1', descricao: 'Sinal / Ato Construtora', tipo: 'SINAL', valorBaseCentavos: 3500000, vencimento: '2026-10-01', pagoAntecipado: false, indiceCorrecao: 'SEM_CORRECAO', taxaJurosMensalPercent: 0, status: 'CONFIRMADO' },
-    { id: 'ob_pl2', descricao: 'Mensais da Obra (24 parcelas)', tipo: 'PARCELA_OBRA', valorBaseCentavos: 3600000, vencimento: '2026-11-01', pagoAntecipado: false, indiceCorrecao: 'INCC', taxaJurosMensalPercent: 0, status: 'CONFIRMADO' },
-    { id: 'ob_pl3', descricao: '4 Balões Semestrais', tipo: 'BALAO_SEMESTRAL', valorBaseCentavos: 3200000, vencimento: '2027-04-01', pagoAntecipado: false, indiceCorrecao: 'INCC', taxaJurosMensalPercent: 0, status: 'CONFIRMADO' },
-    { id: 'ob_pl4', descricao: 'Parcela Única das Chaves', tipo: 'CHAVES', valorBaseCentavos: 2700000, vencimento: '2028-10-01', pagoAntecipado: false, indiceCorrecao: 'INCC', taxaJurosMensalPercent: 0, status: 'CONFIRMADO' },
-    { id: 'ob_pl5', descricao: 'Saldo para Repasse Bancário', tipo: 'REPASSE_FINANCIAMENTO', valorBaseCentavos: 22000000, vencimento: '2028-11-01', pagoAntecipado: false, indiceCorrecao: 'INCC', taxaJurosMensalPercent: 0, status: 'ESTIMADO' }
-  ],
+  obrigacoesVendedor: gerarObrigacoesPlanta(),
 
   propostaBancaria: {
     id: 'prop_planta_repasse',
@@ -450,3 +539,9 @@ export const PROJETO_PLANTA_REPASSE: ProjetoFinanciamento = {
     { id: 'chk_pl4', item: 'Simulação preliminar de capacidade de crédito para repasse', categoria: 'Bancário', status: 'PENDENTE', observacao: 'Reavaliar 6 meses antes da entrega das chaves' }
   ]
 };
+
+export const PROJETOS_EXEMPLO: ProjetoFinanciamento[] = [
+  PROJETO_REAL_SAC_CAIXA,
+  PROJETO_PRICE_CAIXA,
+  PROJETO_PLANTA_REPASSE
+];

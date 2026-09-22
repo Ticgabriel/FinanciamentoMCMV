@@ -6,6 +6,7 @@
 import React, { useState } from 'react';
 import { ProjetoFinanciamento, DescontosBonusConstrutora, ObrigacaoVendedor } from '../types';
 import { toReais } from '../domain/financial';
+import { adicionarMesesCivil } from '../domain/calendar';
 import { 
   Gift, 
   AlertTriangle, 
@@ -94,16 +95,11 @@ export const DescontosBonusCard: React.FC<DescontosBonusCardProps> = ({
   );
   const somaFontesPropriasCentavos = fontesPropriasPreco.reduce((acc, f) => acc + f.valorCentavos, 0);
 
-  // Sinal ou valor já pago antecipadamente
-  const sinalPagoCentavos = projeto.obrigacoesVendedor
-    .filter(o => o.tipo === 'SINAL' || o.pagoAntecipado)
-    .reduce((acc, o) => acc + o.valorBaseCentavos, 0);
-
   // Saldo devedor da entrada que resta parcelar com a construtora
-  // Entrada Bruta - Desconto Comercial - Bônus Pontualidade - Recursos Próprios Disponíveis
+  // Conta direta: Entrada Bruta - Descontos/Bônus - Recursos Próprios/FGTS já alocados
   const saldoResidualEntradaCentavos = Math.max(
     0,
-    entradaBrutaExigida - totalBeneficiosConstrutora - Math.max(somaFontesPropriasCentavos, sinalPagoCentavos)
+    entradaBrutaExigida - totalBeneficiosConstrutora - somaFontesPropriasCentavos
   );
 
   const valorParcelaCentavos = numeroParcelas > 0 
@@ -115,19 +111,25 @@ export const DescontosBonusCard: React.FC<DescontosBonusCardProps> = ({
     if (numeroParcelas <= 0 || saldoResidualEntradaCentavos <= 0) return;
 
     // Filtra obrigações existentes para remover parcelas de entrada anteriores (se houver)
-    const obrigacoesPreservadas = projeto.obrigacoesVendedor.filter(
-      o => !o.id.startsWith('parcela_entrada_auto_')
-    );
+    // E ajusta o sinal acordado para refletir rigorosamente o valor aportado à vista (somaFontesPropriasCentavos)
+    const obrigacoesPreservadas = projeto.obrigacoesVendedor
+      .filter(o => !o.id.startsWith('parcela_entrada_auto_'))
+      .map(o => {
+        if (o.tipo === 'SINAL') {
+          return {
+            ...o,
+            valorBaseCentavos: somaFontesPropriasCentavos
+          };
+        }
+        return o;
+      });
 
-    const dataRef = new Date(dataPrimeiraParcela);
     const novasParcelas: ObrigacaoVendedor[] = [];
 
     for (let i = 1; i <= numeroParcelas; i++) {
-      const dataVenc = new Date(dataRef);
-      dataVenc.setMonth(dataVenc.getMonth() + (i - 1));
-      const vencIso = dataVenc.toISOString().split('T')[0];
+      const vencIso = adicionarMesesCivil(dataPrimeiraParcela, i - 1);
 
-      // Ajuste na última parcela para arredondamentos
+      // Ajuste na última parcela para compensar centavos de arredondamento
       const valorDestaParcela = i === numeroParcelas
         ? saldoResidualEntradaCentavos - (valorParcelaCentavos * (numeroParcelas - 1))
         : valorParcelaCentavos;
@@ -141,7 +143,9 @@ export const DescontosBonusCard: React.FC<DescontosBonusCardProps> = ({
         pagoAntecipado: false,
         indiceCorrecao: indiceCorrecao,
         taxaJurosMensalPercent: 0,
-        status: 'CONFIRMADO'
+        status: 'CONFIRMADO',
+        responsavelPagamento: 'COMPRADOR',
+        afetaCaixaLivre: true
       });
     }
 
